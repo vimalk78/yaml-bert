@@ -8,7 +8,7 @@ from yaml_bert.types import NodeType
 
 
 TEMPLATES_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "kubernetes-yaml-templates"
+    os.path.dirname(__file__), "..", "data", "k8s-yamls"
 )
 
 
