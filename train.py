@@ -12,7 +12,7 @@ from yaml_bert.evaluate import YamlBertEvaluator
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
 from yaml_bert.trainer import YamlBertTrainer
-from yaml_bert.visualize import plot_training_loss, plot_embedding_similarity
+from yaml_bert.visualize import plot_training_loss, plot_embedding_similarity, plot_accuracy
 from yaml_bert.vocab import VocabBuilder
 
 
@@ -116,6 +116,11 @@ def main() -> None:
     print(f"Top-1 accuracy: {accuracy['top1_accuracy']:.2%}")
     print(f"Top-5 accuracy: {accuracy['top5_accuracy']:.2%}")
     print(f"Total masked: {accuracy['total_masked']}")
+
+    plot_accuracy(
+        accuracy,
+        output_path=os.path.join(OUTPUT_DIR, "accuracy.png"),
+    )
 
     embeddings = evaluator.analyze_embeddings()
     for entry in embeddings:

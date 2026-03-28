@@ -26,6 +26,47 @@ def plot_training_loss(
     print(f"Training loss plot saved: {output_path}")
 
 
+def plot_accuracy(
+    results: dict[str, float],
+    output_path: str = "accuracy.png",
+    title: str = "YAML-BERT Key Prediction Accuracy",
+) -> None:
+    """Plot top-1 and top-5 prediction accuracy as a bar chart."""
+    labels: list[str] = ["Top-1", "Top-5"]
+    values: list[float] = [results["top1_accuracy"], results["top5_accuracy"]]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    bars = ax.bar(labels, values, color=["steelblue", "coral"], width=0.5)
+    ax.set_ylabel("Accuracy")
+    ax.set_title(title)
+    ax.set_ylim(0, 1)
+
+    for bar, val in zip(bars, values):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.02,
+            f"{val:.1%}",
+            ha="center",
+            fontsize=14,
+            fontweight="bold",
+        )
+
+    total: float = results.get("total_masked", 0)
+    ax.text(
+        0.5, -0.1,
+        f"Total masked positions: {int(total)}",
+        ha="center",
+        transform=ax.transAxes,
+        fontsize=10,
+        color="gray",
+    )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Accuracy plot saved: {output_path}")
+
+
 def plot_embedding_similarity(
     results: list[dict[str, Any]],
     output_path: str = "embedding_similarity.png",
