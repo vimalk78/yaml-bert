@@ -67,6 +67,8 @@ def test_extract_parent_key():
     assert vocab.extract_parent_key("spec.containers.0.ports.1") == "ports"
     assert vocab.extract_parent_key("") == ""
     assert vocab.extract_parent_key("spec") == "spec"
+    assert vocab.extract_parent_key("spec.containers.0") == "containers"
+    assert vocab.extract_parent_key("args.0") == "args"
 
 
 def test_encode_parent_key():
