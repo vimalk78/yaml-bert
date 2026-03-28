@@ -37,6 +37,23 @@ class Vocabulary:
             return self._id_to_special[id]
         return self._id_to_value.get(id, "[UNK]")
 
+    @staticmethod
+    def extract_parent_key(parent_path: str) -> str:
+        """Extract the last non-numeric component from a parent_path.
+
+        Examples:
+            "spec.template.spec.containers.0" -> "containers"
+            "metadata" -> "metadata"
+            "" -> ""
+        """
+        if not parent_path:
+            return ""
+        parts = parent_path.split(".")
+        for part in reversed(parts):
+            if not part.isdigit():
+                return part
+        return ""
+
     @property
     def key_vocab_size(self) -> int:
         return len(self.key_vocab) + len(self.special_tokens)
