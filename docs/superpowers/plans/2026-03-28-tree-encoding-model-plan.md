@@ -1205,6 +1205,11 @@ class YamlBertTrainer:
         self.model.to(self.device)
         self.model.train()
 
+        num_params: int = sum(p.numel() for p in self.model.parameters())
+        print(f"Model parameters: {num_params:,}")
+        print(f"Config: d_model={self.config.d_model}, layers={self.config.num_layers}, heads={self.config.num_heads}")
+        print(f"Device: {self.device}")
+
         optimizer: AdamW = AdamW(
             self.model.parameters(), lr=self.config.lr, weight_decay=0.01
         )
