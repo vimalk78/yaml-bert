@@ -92,8 +92,6 @@ Token embedding routing by node_type:
 
 `parent_key_embedding` is used for all nodes regardless of type — every node has a parent key.
 
-`key_embedding` and `parent_key_embedding` both index into key_vocab_size, but have **independently learned weights**. "I am `spec`" (token role) and "my parent is `spec`" (ancestry role) produce different vectors.
-
 ### Tree Positional Encoding
 
 ```mermaid
@@ -137,8 +135,6 @@ tree_pos = (depth_embedding(depth)
 | `sibling_embedding` | max_sibling x d_model | Horizontal position among siblings |
 | `node_type_embedding` | 4 x d_model | KEY, VALUE, LIST_KEY, LIST_VALUE |
 | `parent_key_embedding` | key_vocab_size x d_model | Immediate parent key |
-
-**`parent_key_embedding` is a separate table from `key_embedding`**, even though both use key vocabulary IDs. They represent different roles: "I am this key" vs "my parent is this key."
 
 **`parent_key_id`** is extracted from `parent_path`: the last non-numeric component. For a node with `parent_path="spec.template.spec.containers.0"`, the parent key is `"containers"`.
 
