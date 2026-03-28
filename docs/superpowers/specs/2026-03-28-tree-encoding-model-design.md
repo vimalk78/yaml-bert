@@ -73,8 +73,6 @@ flowchart LR
 | `node_type_embedding` | 4 x hidden_dim | NodeType enum (0-3) | "I am KEY / VALUE / LIST_KEY / LIST_VALUE" — structural role of this node |
 | `parent_key_embedding` | key_vocab_size x hidden_dim | parent's key token ID | "My parent is this key" — same vocab as `key_embedding` but separate learned weights; distinguishes `replicas` under `spec` vs under `status` |
 
-Note: `key_embedding` and `parent_key_embedding` both use key vocabulary IDs but are **separate tables** with independently learned weights. "I am `spec`" (token role) is a different concept from "my parent is `spec`" (ancestry role).
-
 ### Token Embedding
 
 Three embedding tables use the key vocabulary. One uses the value vocabulary. All are separate learned tables projecting to `hidden_dim`:
