@@ -122,3 +122,38 @@ class YamlDataset(Dataset):
             "parent_key_ids": torch.tensor(parent_key_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
         }
+
+
+def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+    """Pad a batch of variable-length sequences and create padding mask."""
+    max_len: int = max(item["token_ids"].size(0) for item in batch)
+
+    padded: dict[str, list[torch.Tensor]] = {key: [] for key in batch[0].keys()}
+    padding_masks: list[torch.Tensor] = []
+
+    for item in batch:
+        seq_len: int = item["token_ids"].size(0)
+        pad_len: int = max_len - seq_len
+
+        for key in item:
+            if pad_len > 0:
+                pad_value: int = -100 if key == "labels" else 0
+                padding: torch.Tensor = torch.full(
+                    (pad_len,), pad_value, dtype=torch.long
+                )
+                padded[key].append(torch.cat([item[key], padding]))
+            else:
+                padded[key].append(item[key])
+
+        mask: torch.Tensor = torch.cat([
+            torch.zeros(seq_len, dtype=torch.bool),
+            torch.ones(pad_len, dtype=torch.bool),
+        ]) if pad_len > 0 else torch.zeros(seq_len, dtype=torch.bool)
+        padding_masks.append(mask)
+
+    result: dict[str, torch.Tensor] = {
+        key: torch.stack(tensors) for key, tensors in padded.items()
+    }
+    result["padding_mask"] = torch.stack(padding_masks)
+
+    return result

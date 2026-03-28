@@ -80,3 +80,36 @@ def test_dataset_masking_only_keys():
         masked_types = node_types[masked_positions]
         for t in masked_types:
             assert t.item() in (0, 2), f"Masked a non-key node: type={t.item()}"
+
+
+from yaml_bert.dataset import collate_fn
+
+
+def test_collate_fn_padding():
+    item1 = {
+        "token_ids": torch.tensor([1, 2, 3], dtype=torch.long),
+        "node_types": torch.tensor([0, 1, 0], dtype=torch.long),
+        "depths": torch.tensor([0, 0, 1], dtype=torch.long),
+        "sibling_indices": torch.tensor([0, 0, 0], dtype=torch.long),
+        "parent_key_ids": torch.tensor([1, 1, 2], dtype=torch.long),
+        "labels": torch.tensor([-100, 5, -100], dtype=torch.long),
+    }
+    item2 = {
+        "token_ids": torch.tensor([4, 5], dtype=torch.long),
+        "node_types": torch.tensor([0, 1], dtype=torch.long),
+        "depths": torch.tensor([0, 0], dtype=torch.long),
+        "sibling_indices": torch.tensor([0, 0], dtype=torch.long),
+        "parent_key_ids": torch.tensor([1, 1], dtype=torch.long),
+        "labels": torch.tensor([6, -100], dtype=torch.long),
+    }
+
+    batch = collate_fn([item1, item2])
+
+    assert batch["token_ids"].shape == (2, 3)
+    assert batch["padding_mask"].shape == (2, 3)
+
+    assert batch["padding_mask"][0].tolist() == [False, False, False]
+    assert batch["padding_mask"][1].tolist() == [False, False, True]
+
+    assert batch["token_ids"][1, 2].item() == 0
+    assert batch["labels"][1, 2].item() == -100
