@@ -175,7 +175,7 @@ In our learned depth embedding:
 depth_emb(3) - depth_emb(1) is NOT guaranteed to equal depth_emb(5) - depth_emb(3)
 ```
 
-The model must learn that "two levels apart" is a consistent relationship across different absolute depths. With only ~10 depth levels and 128 dimensions, this is easily learnable — but it is learned, not built in.
+The model must learn that "two levels apart" is a consistent relationship across different absolute depths. With only ~10 depth levels and d_model dimensions, this is easily learnable — but it is learned, not built in.
 
 We could recover this property by using sinusoidal encoding for the depth dimension specifically:
 

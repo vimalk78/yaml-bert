@@ -13,7 +13,7 @@ flowchart TD
     C --> D["YamlDataset<br/>encode to tensor IDs,<br/>apply key masking (15%)"]
     D --> E["YamlBertEmbedding<br/>token_emb + tree_pos_emb"]
     E --> F["TransformerEncoder<br/>N layers, H heads"]
-    F --> G["Key Prediction Head<br/>Linear(hidden_dim, key_vocab_size)"]
+    F --> G["Key Prediction Head<br/>Linear(d_model, key_vocab_size)"]
     G --> H["CrossEntropyLoss<br/>on masked key positions only"]
 
     style E fill:#f9d,stroke:#333
@@ -31,7 +31,7 @@ input(node) = token_emb(token) + tree_pos(node)
 
 ### All Embedding Tables
 
-Six separate learned embedding tables, all projecting to the same `hidden_dim` space:
+Six separate learned embedding tables, all projecting to the same `d_model` space:
 
 ```mermaid
 flowchart LR
@@ -66,24 +66,24 @@ flowchart LR
 
 | Table | Size | Index | Role |
 |-------|------|-------|------|
-| `key_embedding` | key_vocab_size x hidden_dim | key token ID | "I am this key" — e.g., `spec`, `replicas`, `name` |
-| `value_embedding` | value_vocab_size x hidden_dim | value token ID | "I am this value" — e.g., `nginx`, `Always`, `3` |
-| `depth_embedding` | max_depth x hidden_dim | depth integer (0, 1, 2, ...) | "I am at this depth" — depth 0 = top-level keys like `apiVersion`, `kind`; depth 1 = `name`, `replicas`; deeper = nested fields |
-| `sibling_embedding` | max_sibling x hidden_dim | sibling_index integer (0, 1, 2, ...) | "I am the Nth child" — in K8s, key ordering follows conventions: `apiVersion` is often sibling 0, `kind` sibling 1 under root |
-| `node_type_embedding` | 4 x hidden_dim | NodeType enum (0-3) | "I am KEY / VALUE / LIST_KEY / LIST_VALUE" — structural role of this node |
-| `parent_key_embedding` | key_vocab_size x hidden_dim | parent's key token ID (looked up by child) | "My parent is this key" — the child looks up its parent's key ID and gets a vector representing the parent-child relationship. This vector is distinct from what the parent gets from `key_embedding` for the same key: `parent_key_embedding["spec"]` ("spec is my parent") differs from `key_embedding["spec"]` ("I am spec") |
+| `key_embedding` | key_vocab_size x d_model | key token ID | "I am this key" — e.g., `spec`, `replicas`, `name` |
+| `value_embedding` | value_vocab_size x d_model | value token ID | "I am this value" — e.g., `nginx`, `Always`, `3` |
+| `depth_embedding` | max_depth x d_model | depth integer (0, 1, 2, ...) | "I am at this depth" — depth 0 = top-level keys like `apiVersion`, `kind`; depth 1 = `name`, `replicas`; deeper = nested fields |
+| `sibling_embedding` | max_sibling x d_model | sibling_index integer (0, 1, 2, ...) | "I am the Nth child" — in K8s, key ordering follows conventions: `apiVersion` is often sibling 0, `kind` sibling 1 under root |
+| `node_type_embedding` | 4 x d_model | NodeType enum (0-3) | "I am KEY / VALUE / LIST_KEY / LIST_VALUE" — structural role of this node |
+| `parent_key_embedding` | key_vocab_size x d_model | parent's key token ID (looked up by child) | "My parent is this key" — the child looks up its parent's key ID and gets a vector representing the parent-child relationship. This vector is distinct from what the parent gets from `key_embedding` for the same key: `parent_key_embedding["spec"]` ("spec is my parent") differs from `key_embedding["spec"]` ("I am spec") |
 
 ### Token Embedding
 
-Two embedding tables use key vocabulary IDs (`key_embedding` and `parent_key_embedding` — same IDs, independently learned weights). One uses value vocabulary IDs. The remaining three use their own integer indices (depth, sibling, node type). All project to `hidden_dim`:
+Two embedding tables use key vocabulary IDs (`key_embedding` and `parent_key_embedding` — same IDs, independently learned weights). One uses value vocabulary IDs. The remaining three use their own integer indices (depth, sibling, node type). All project to `d_model`:
 
 ```python
 # Token role: "I am this key/value"
-self.key_embedding: nn.Embedding      # key_vocab_size x hidden_dim
-self.value_embedding: nn.Embedding    # value_vocab_size x hidden_dim
+self.key_embedding: nn.Embedding      # key_vocab_size x d_model
+self.value_embedding: nn.Embedding    # value_vocab_size x d_model
 
 # Ancestry role: "my parent is this key"
-self.parent_key_embedding: nn.Embedding  # key_vocab_size x hidden_dim
+self.parent_key_embedding: nn.Embedding  # key_vocab_size x d_model
 ```
 
 Token embedding routing by node_type:
@@ -119,7 +119,7 @@ flowchart LR
     TOK --> ADD(("+"))
     TPE --> ADD
     ADD --> LN["LayerNorm"]
-    LN --> OUT["Input vector<br/>(hidden_dim)"]
+    LN --> OUT["Input vector<br/>(d_model)"]
 ```
 
 Four learned embedding components, summed:
@@ -133,10 +133,10 @@ tree_pos = (depth_embedding(depth)
 
 | Component | Table size | What it captures |
 |-----------|-----------|-----------------|
-| `depth_embedding` | max_depth x hidden_dim | Vertical position in tree |
-| `sibling_embedding` | max_sibling x hidden_dim | Horizontal position among siblings |
-| `node_type_embedding` | 4 x hidden_dim | KEY, VALUE, LIST_KEY, LIST_VALUE |
-| `parent_key_embedding` | key_vocab_size x hidden_dim | Immediate parent key |
+| `depth_embedding` | max_depth x d_model | Vertical position in tree |
+| `sibling_embedding` | max_sibling x d_model | Horizontal position among siblings |
+| `node_type_embedding` | 4 x d_model | KEY, VALUE, LIST_KEY, LIST_VALUE |
+| `parent_key_embedding` | key_vocab_size x d_model | Immediate parent key |
 
 **`parent_key_embedding` is a separate table from `key_embedding`**, even though both use key vocabulary IDs. They represent different roles: "I am this key" vs "my parent is this key."
 
@@ -198,7 +198,7 @@ Both `replicas` nodes get identical positional encodings under Option A. Adding 
 
 **Why learned embeddings, not sinusoidal?** Sinusoidal encoding provides built-in relative position via rotation matrices. With learned embeddings, relative depth relationships must be learned. But with only ~10 depth levels, this is easily learnable. The parent_key component is categorical and must be learned anyway.
 
-**Why additive (sum), not concatenation?** Summing keeps the hidden dimension at `hidden_dim`. Concatenation would require `hidden_dim * 6` or smaller per-component dims. Additive encoding follows BERT convention and allows the attention mechanism to decompose components via learned Q/K projections.
+**Why additive (sum), not concatenation?** Summing keeps the hidden dimension at `d_model`. Concatenation would require `d_model * 6` or smaller per-component dims. Additive encoding follows BERT convention and allows the attention mechanism to decompose components via learned Q/K projections.
 
 ### Combined Formula
 
@@ -216,17 +216,17 @@ class YamlBertModel(nn.Module):
     def __init__(
         self,
         embedding: YamlBertEmbedding,
-        hidden_dim: int,
+        d_model: int,
         num_layers: int,
         num_heads: int,
         key_vocab_size: int = ...,
     ) -> None:
         self.embedding: YamlBertEmbedding
         self.encoder: nn.TransformerEncoder  # num_layers, num_heads
-        self.key_prediction_head: nn.Linear  # hidden_dim -> key_vocab_size
+        self.key_prediction_head: nn.Linear  # d_model -> key_vocab_size
 ```
 
-- `dim_feedforward = 4 * hidden_dim` (standard BERT ratio)
+- `d_ff = 4 * d_model` (standard BERT ratio)
 - **One prediction head** — keys only. Values are never predicted.
 - `padding_mask` for variable-length sequences in a batch.
 - Forward pass returns `key_logits: torch.Tensor` of shape `(batch_size, seq_len, key_vocab_size)`.
@@ -388,10 +388,10 @@ Save model state dict every 10 epochs and at the end of training.
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| hidden_dim | 256 | Sufficient capacity for ~9000+ manifests |
+| d_model | 256 | Sufficient capacity for ~9000+ manifests |
 | num_layers | 6 | Deep enough for cross-field pattern learning |
 | num_heads | 8 | 32 dims per head, good granularity for structural attention |
-| dim_feedforward | 1024 | 4x hidden_dim (BERT convention) |
+| d_ff | 4 x d_model | Feed-forward intermediate dimension (BERT convention) |
 | max_depth | 16 | Covers deepest K8s YAML nesting |
 | max_sibling | 32 | Covers widest sibling counts |
 | mask_prob | 0.15 | Standard BERT masking rate |
