@@ -84,9 +84,6 @@ class Vocabulary:
 
 class VocabBuilder:
     def build(self, nodes: list[YamlNode], min_freq: int = 1) -> Vocabulary:
-        special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
-        offset = len(special_tokens)
-
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
 
@@ -95,6 +92,18 @@ class VocabBuilder:
                 key_counts[node.token] = key_counts.get(node.token, 0) + 1
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
+
+        return self.build_from_counts(key_counts, value_counts, min_freq)
+
+    @staticmethod
+    def build_from_counts(
+        key_counts: dict[str, int],
+        value_counts: dict[str, int],
+        min_freq: int = 1,
+    ) -> Vocabulary:
+        """Build vocabulary from pre-computed token counts."""
+        special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
+        offset = len(special_tokens)
 
         key_vocab = {
             token: i + offset
@@ -112,6 +121,27 @@ class VocabBuilder:
 
         return Vocabulary(key_vocab, value_vocab, special_tokens)
 
+    @staticmethod
+    def save_counts(
+        key_counts: dict[str, int],
+        value_counts: dict[str, int],
+        path: str,
+    ) -> None:
+        """Save raw token counts to a JSON file for reuse."""
+        with open(path, "w") as f:
+            json.dump({"key_counts": key_counts, "value_counts": value_counts}, f)
+        print(f"Token counts saved: {path} ({len(key_counts)} keys, {len(value_counts)} values)")
+
+    @staticmethod
+    def load_counts(path: str) -> tuple[dict[str, int], dict[str, int]]:
+        """Load raw token counts from a JSON file."""
+        with open(path) as f:
+            data = json.load(f)
+        key_counts: dict[str, int] = data["key_counts"]
+        value_counts: dict[str, int] = data["value_counts"]
+        print(f"Token counts loaded: {path} ({len(key_counts)} keys, {len(value_counts)} values)")
+        return key_counts, value_counts
+
     def build_from_huggingface(
         self,
         dataset_name: str,
@@ -119,6 +149,7 @@ class VocabBuilder:
         annotator: "DomainAnnotator",
         max_docs: int | None = None,
         min_freq: int = 1,
+        counts_path: str | None = None,
     ) -> Vocabulary:
         """Build vocabulary by scanning a HuggingFace dataset.
 
@@ -128,7 +159,15 @@ class VocabBuilder:
             annotator: DomainAnnotator instance
             max_docs: Scan at most this many docs for vocab (None = all)
             min_freq: Minimum frequency to include a token
+            counts_path: If set, save raw counts here (and load if file exists)
         """
+        import os
+
+        # Reuse saved counts if available
+        if counts_path and os.path.exists(counts_path):
+            key_counts, value_counts = self.load_counts(counts_path)
+            return self.build_from_counts(key_counts, value_counts, min_freq)
+
         from datasets import load_dataset
         from yaml_bert.types import YamlNode
 
@@ -154,4 +193,18 @@ class VocabBuilder:
                 print(f"  {i + 1:,} / {total:,} scanned ({len(all_nodes):,} nodes)")
 
         print(f"Scanned {total - skipped:,} docs, {len(all_nodes):,} nodes ({skipped} skipped)")
-        return self.build(all_nodes, min_freq=min_freq)
+
+        # Compute counts
+        key_counts: dict[str, int] = {}
+        value_counts: dict[str, int] = {}
+        for node in all_nodes:
+            if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
+                key_counts[node.token] = key_counts.get(node.token, 0) + 1
+            elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
+                value_counts[node.token] = value_counts.get(node.token, 0) + 1
+
+        # Save counts for reuse
+        if counts_path:
+            self.save_counts(key_counts, value_counts, counts_path)
+
+        return self.build_from_counts(key_counts, value_counts, min_freq)

@@ -76,22 +76,21 @@ def main() -> None:
 
     # Step 1: Build or load vocabulary
     vocab_path: str = os.path.join(args.output_dir, "vocab.json")
-    if os.path.exists(vocab_path) and not args.resume:
-        print(f"Loading existing vocabulary from {vocab_path}")
-        vocab: Vocabulary = Vocabulary.load(vocab_path)
-    else:
-        print("=" * 60)
-        print("Step 1: Building vocabulary")
-        print("=" * 60)
-        builder: VocabBuilder = VocabBuilder()
-        vocab = builder.build_from_huggingface(
-            DATASET_NAME,
-            linearizer=linearizer,
-            annotator=annotator,
-            max_docs=max_docs,
-            min_freq=args.vocab_min_freq,
-        )
-        vocab.save(vocab_path)
+    counts_path: str = os.path.join(args.output_dir, "token_counts.json")
+
+    print("=" * 60)
+    print("Step 1: Building vocabulary")
+    print("=" * 60)
+    builder: VocabBuilder = VocabBuilder()
+    vocab: Vocabulary = builder.build_from_huggingface(
+        DATASET_NAME,
+        linearizer=linearizer,
+        annotator=annotator,
+        max_docs=max_docs,
+        min_freq=args.vocab_min_freq,
+        counts_path=counts_path,
+    )
+    vocab.save(vocab_path)
 
     print(f"Key vocab: {len(vocab.key_vocab)} tokens")
     print(f"Value vocab: {len(vocab.value_vocab)} tokens")
