@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import os
+
+import torch
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+
+from yaml_bert.config import YamlBertConfig
+from yaml_bert.dataset import YamlDataset, collate_fn
+from yaml_bert.model import YamlBertModel
+
+
+class YamlBertTrainer:
+    """Training loop for YAML-BERT masked key prediction."""
+
+    def __init__(
+        self,
+        config: YamlBertConfig,
+        model: YamlBertModel,
+        dataset: YamlDataset,
+        checkpoint_dir: str | None = None,
+        checkpoint_every: int = 10,
+        resume_from: str | None = None,
+    ) -> None:
+        self.config: YamlBertConfig = config
+        self.model: YamlBertModel = model
+        self.dataset: YamlDataset = dataset
+        self.checkpoint_dir: str | None = checkpoint_dir
+        self.checkpoint_every: int = checkpoint_every
+        self.resume_from: str | None = resume_from
+
+        self.device: torch.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+
+    def train(self) -> list[float]:
+        """Run training loop. Returns list of average loss per epoch."""
+        self.model.to(self.device)
+        self.model.train()
+
+        num_params: int = sum(p.numel() for p in self.model.parameters())
+        print(f"Model parameters: {num_params:,}")
+        print(f"Config: d_model={self.config.d_model}, layers={self.config.num_layers}, heads={self.config.num_heads}")
+        print(f"Device: {self.device}")
+
+        optimizer: AdamW = AdamW(
+            self.model.parameters(), lr=self.config.lr, weight_decay=0.01
+        )
+
+        start_epoch: int = 0
+
+        # Resume from checkpoint if specified
+        if self.resume_from:
+            checkpoint: dict = torch.load(self.resume_from, map_location=self.device)
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            start_epoch = checkpoint["epoch"]
+            print(f"Resumed from epoch {start_epoch}")
+
+        dataloader: DataLoader = DataLoader(
+            self.dataset,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+        )
+
+        epoch_losses: list[float] = []
+
+        for epoch in range(start_epoch, self.config.num_epochs):
+            total_loss: float = 0.0
+            num_batches: int = 0
+
+            for batch in dataloader:
+                batch = {k: v.to(self.device) for k, v in batch.items()}
+
+                optimizer.zero_grad()
+
+                key_logits: torch.Tensor = self.model(
+                    token_ids=batch["token_ids"],
+                    node_types=batch["node_types"],
+                    depths=batch["depths"],
+                    sibling_indices=batch["sibling_indices"],
+                    parent_key_ids=batch["parent_key_ids"],
+                    padding_mask=batch["padding_mask"],
+                )
+
+                loss: torch.Tensor = self.model.compute_loss(
+                    key_logits, batch["labels"]
+                )
+
+                loss.backward()
+                optimizer.step()
+
+                total_loss += loss.item()
+                num_batches += 1
+
+            avg_loss: float = total_loss / max(num_batches, 1)
+            epoch_losses.append(avg_loss)
+            print(f"Epoch {epoch + 1}/{self.config.num_epochs} — loss: {avg_loss:.4f}")
+
+            # Checkpoint
+            if self.checkpoint_dir and (epoch + 1) % self.checkpoint_every == 0:
+                self._save_checkpoint(epoch + 1, optimizer)
+
+        # Save final checkpoint
+        if self.checkpoint_dir:
+            self._save_checkpoint(self.config.num_epochs, optimizer)
+
+        return epoch_losses
+
+    def _save_checkpoint(self, epoch: int, optimizer: AdamW) -> None:
+        assert self.checkpoint_dir is not None
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        path: str = os.path.join(
+            self.checkpoint_dir, f"yaml_bert_epoch_{epoch}.pt"
+        )
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        }, path)
+        print(f"Checkpoint saved: {path}")

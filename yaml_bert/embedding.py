@@ -49,8 +49,10 @@ class YamlBertEmbedding(nn.Module):
         # KEY=0, LIST_KEY=2 use key_embedding; VALUE=1, LIST_VALUE=3 use value_embedding
         is_key: torch.Tensor = (node_types == 0) | (node_types == 2)
 
-        key_emb: torch.Tensor = self.key_embedding(token_ids)
-        val_emb: torch.Tensor = self.value_embedding(token_ids)
+        key_vocab_size: int = self.key_embedding.num_embeddings
+        val_vocab_size: int = self.value_embedding.num_embeddings
+        key_emb: torch.Tensor = self.key_embedding(token_ids.clamp(0, key_vocab_size - 1))
+        val_emb: torch.Tensor = self.value_embedding(token_ids.clamp(0, val_vocab_size - 1))
         token_emb: torch.Tensor = torch.where(
             is_key.unsqueeze(-1), key_emb, val_emb
         )
