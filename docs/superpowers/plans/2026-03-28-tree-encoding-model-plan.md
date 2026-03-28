@@ -72,7 +72,12 @@ def test_extract_parent_key():
 
 
 def test_encode_parent_key():
-    yaml_str = "spec:\n  replicas: 3\nstatus:\n  replicas: 2\n"
+    yaml_str = """\
+spec:
+  replicas: 3
+status:
+  replicas: 2
+"""
     linearizer = YamlLinearizer()
     nodes = linearizer.linearize(yaml_str)
 
@@ -97,7 +102,9 @@ def test_encode_parent_key():
 
 def test_encode_parent_key_root_nodes():
     """Root-level nodes have parent_path='', parent_key should map to [UNK]."""
-    yaml_str = "apiVersion: v1\n"
+    yaml_str = """\
+apiVersion: v1
+"""
     linearizer = YamlLinearizer()
     nodes = linearizer.linearize(yaml_str)
 
