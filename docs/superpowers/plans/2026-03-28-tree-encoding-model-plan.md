@@ -1116,6 +1116,42 @@ def test_trainer_saves_checkpoint(tmp_path):
     checkpoint_files = os.listdir(tmp_path)
     assert len(checkpoint_files) > 0
     assert any(f.endswith(".pt") for f in checkpoint_files)
+
+    # Checkpoint should contain model + optimizer state + epoch
+    checkpoint_path = os.path.join(tmp_path, checkpoint_files[0])
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    assert "model_state_dict" in checkpoint
+    assert "optimizer_state_dict" in checkpoint
+    assert "epoch" in checkpoint
+
+
+def test_trainer_resumes_from_checkpoint(tmp_path):
+    model, dataset = _build_model_and_dataset()
+
+    # Train 1 epoch and save checkpoint
+    config_1 = YamlBertConfig(d_model=64, num_layers=2, num_heads=2, num_epochs=1)
+    trainer1 = YamlBertTrainer(
+        config=config_1,
+        model=model,
+        dataset=dataset,
+        checkpoint_dir=str(tmp_path),
+        checkpoint_every=1,
+    )
+    losses1 = trainer1.train()
+
+    # Resume and train 1 more epoch
+    checkpoint_path = os.path.join(tmp_path, "yaml_bert_epoch_1.pt")
+    config_2 = YamlBertConfig(d_model=64, num_layers=2, num_heads=2, num_epochs=2)
+    trainer2 = YamlBertTrainer(
+        config=config_2,
+        model=model,
+        dataset=dataset,
+        resume_from=checkpoint_path,
+    )
+    losses2 = trainer2.train()
+
+    # Should have trained only 1 additional epoch (epoch 2), not from scratch
+    assert len(losses2) == 1
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1151,12 +1187,14 @@ class YamlBertTrainer:
         dataset: YamlDataset,
         checkpoint_dir: str | None = None,
         checkpoint_every: int = 10,
+        resume_from: str | None = None,
     ) -> None:
         self.config: YamlBertConfig = config
         self.model: YamlBertModel = model
         self.dataset: YamlDataset = dataset
         self.checkpoint_dir: str | None = checkpoint_dir
         self.checkpoint_every: int = checkpoint_every
+        self.resume_from: str | None = resume_from
 
         self.device: torch.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
@@ -1170,6 +1208,17 @@ class YamlBertTrainer:
         optimizer: AdamW = AdamW(
             self.model.parameters(), lr=self.config.lr, weight_decay=0.01
         )
+
+        start_epoch: int = 0
+
+        # Resume from checkpoint if specified
+        if self.resume_from:
+            checkpoint: dict = torch.load(self.resume_from, map_location=self.device)
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            start_epoch = checkpoint["epoch"]
+            print(f"Resumed from epoch {start_epoch}")
+
         dataloader: DataLoader = DataLoader(
             self.dataset,
             batch_size=self.config.batch_size,
@@ -1179,12 +1228,11 @@ class YamlBertTrainer:
 
         epoch_losses: list[float] = []
 
-        for epoch in range(self.config.num_epochs):
+        for epoch in range(start_epoch, self.config.num_epochs):
             total_loss: float = 0.0
             num_batches: int = 0
 
             for batch in dataloader:
-                # Move batch to device
                 batch = {k: v.to(self.device) for k, v in batch.items()}
 
                 optimizer.zero_grad()
@@ -1214,21 +1262,25 @@ class YamlBertTrainer:
 
             # Checkpoint
             if self.checkpoint_dir and (epoch + 1) % self.checkpoint_every == 0:
-                self._save_checkpoint(epoch + 1)
+                self._save_checkpoint(epoch + 1, optimizer)
 
         # Save final checkpoint
         if self.checkpoint_dir:
-            self._save_checkpoint(self.config.num_epochs)
+            self._save_checkpoint(self.config.num_epochs, optimizer)
 
         return epoch_losses
 
-    def _save_checkpoint(self, epoch: int) -> None:
+    def _save_checkpoint(self, epoch: int, optimizer: AdamW) -> None:
         assert self.checkpoint_dir is not None
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         path: str = os.path.join(
             self.checkpoint_dir, f"yaml_bert_epoch_{epoch}.pt"
         )
-        torch.save(self.model.state_dict(), path)
+        torch.save({
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+        }, path)
         print(f"Checkpoint saved: {path}")
 ```
 
@@ -1267,6 +1319,7 @@ from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
 from yaml_bert.dataset import YamlDataset, collate_fn
 from yaml_bert.trainer import YamlBertTrainer
+from yaml_bert.evaluate import YamlBertEvaluator
 
 __all__ = [
     "YamlBertConfig",
@@ -1281,6 +1334,7 @@ __all__ = [
     "YamlDataset",
     "collate_fn",
     "YamlBertTrainer",
+    "YamlBertEvaluator",
 ]
 ```
 
@@ -1452,4 +1506,546 @@ Expected: ALL PASS (with training output printed)
 ```bash
 git add tests/test_e2e.py
 git commit -m "test: end-to-end pipeline and tree position differentiation tests"
+```
+
+---
+
+### Task 11: Model Evaluation
+
+Post-training evaluation: masked key prediction accuracy, embedding analysis, top-k predictions.
+
+**Files:**
+- Create: `yaml_bert/evaluate.py`
+- Create: `tests/test_evaluate.py`
+
+- [ ] **Step 1: Write failing test**
+
+File: `tests/test_evaluate.py`
+
+```python
+import glob
+import os
+
+import torch
+from yaml_bert.config import YamlBertConfig
+from yaml_bert.embedding import YamlBertEmbedding
+from yaml_bert.model import YamlBertModel
+from yaml_bert.dataset import YamlDataset
+from yaml_bert.evaluate import YamlBertEvaluator
+from yaml_bert.linearizer import YamlLinearizer
+from yaml_bert.annotator import DomainAnnotator
+from yaml_bert.vocab import VocabBuilder
+
+TEMPLATES_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "data", "k8s-yamls"
+)
+
+TEST_CONFIG: YamlBertConfig = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
+
+
+def _build_trained_model() -> tuple[YamlBertModel, YamlDataset, "Vocabulary"]:
+    linearizer = YamlLinearizer()
+    annotator = DomainAnnotator()
+
+    all_nodes = []
+    for path in glob.glob(os.path.join(TEMPLATES_DIR, "**", "*.yaml"), recursive=True):
+        nodes = linearizer.linearize_file(path)
+        annotator.annotate(nodes)
+        all_nodes.extend(nodes)
+
+    vocab = VocabBuilder().build(all_nodes)
+
+    dataset = YamlDataset(
+        yaml_dir=TEMPLATES_DIR,
+        vocab=vocab,
+        linearizer=YamlLinearizer(),
+        annotator=DomainAnnotator(),
+        config=TEST_CONFIG,
+    )
+
+    emb = YamlBertEmbedding(
+        config=TEST_CONFIG,
+        key_vocab_size=vocab.key_vocab_size,
+        value_vocab_size=vocab.value_vocab_size,
+    )
+    model = YamlBertModel(
+        config=TEST_CONFIG,
+        embedding=emb,
+        key_vocab_size=vocab.key_vocab_size,
+    )
+
+    # Quick train so model has non-random weights
+    from yaml_bert.trainer import YamlBertTrainer
+    train_config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2, num_epochs=3)
+    trainer = YamlBertTrainer(config=train_config, model=model, dataset=dataset)
+    trainer.train()
+
+    return model, dataset, vocab
+
+
+def test_evaluator_prediction_accuracy():
+    model, dataset, vocab = _build_trained_model()
+    evaluator = YamlBertEvaluator(model=model, dataset=dataset, vocab=vocab)
+
+    results = evaluator.evaluate_prediction_accuracy()
+
+    assert "top1_accuracy" in results
+    assert "top5_accuracy" in results
+    assert 0.0 <= results["top1_accuracy"] <= 1.0
+    assert 0.0 <= results["top5_accuracy"] <= 1.0
+    assert results["top5_accuracy"] >= results["top1_accuracy"]
+
+
+def test_evaluator_embedding_analysis():
+    model, dataset, vocab = _build_trained_model()
+    evaluator = YamlBertEvaluator(model=model, dataset=dataset, vocab=vocab)
+
+    results = evaluator.analyze_embeddings()
+
+    # Should report cosine similarities for key pairs
+    assert len(results) > 0
+    for entry in results:
+        assert "key" in entry
+        assert "position_a" in entry
+        assert "position_b" in entry
+        assert "cosine_similarity" in entry
+        assert -1.0 <= entry["cosine_similarity"] <= 1.0
+
+
+def test_evaluator_top_k_predictions():
+    model, dataset, vocab = _build_trained_model()
+    evaluator = YamlBertEvaluator(model=model, dataset=dataset, vocab=vocab)
+
+    predictions = evaluator.top_k_predictions(doc_idx=0, k=5)
+
+    assert len(predictions) > 0
+    for pred in predictions:
+        assert "position" in pred
+        assert "true_key" in pred
+        assert "predicted_keys" in pred
+        assert len(pred["predicted_keys"]) <= 5
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/test_evaluate.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Implement YamlBertEvaluator**
+
+File: `yaml_bert/evaluate.py`
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+import torch
+import torch.nn.functional as F
+
+from yaml_bert.dataset import YamlDataset
+from yaml_bert.model import YamlBertModel
+from yaml_bert.vocab import Vocabulary
+
+
+class YamlBertEvaluator:
+    """Post-training evaluation for YAML-BERT."""
+
+    def __init__(
+        self,
+        model: YamlBertModel,
+        dataset: YamlDataset,
+        vocab: Vocabulary,
+    ) -> None:
+        self.model: YamlBertModel = model
+        self.dataset: YamlDataset = dataset
+        self.vocab: Vocabulary = vocab
+        self.device: torch.device = next(model.parameters()).device
+
+    @torch.no_grad()
+    def evaluate_prediction_accuracy(self) -> dict[str, float]:
+        """Compute top-1 and top-5 masked key prediction accuracy over the dataset."""
+        self.model.eval()
+
+        total_masked: int = 0
+        top1_correct: int = 0
+        top5_correct: int = 0
+
+        for idx in range(len(self.dataset)):
+            item: dict[str, torch.Tensor] = self.dataset[idx]
+            labels: torch.Tensor = item["labels"]
+
+            masked_positions: torch.Tensor = labels != -100
+            if not masked_positions.any():
+                continue
+
+            # Add batch dimension
+            batch: dict[str, torch.Tensor] = {
+                k: v.unsqueeze(0).to(self.device) for k, v in item.items()
+            }
+
+            key_logits: torch.Tensor = self.model(
+                token_ids=batch["token_ids"],
+                node_types=batch["node_types"],
+                depths=batch["depths"],
+                sibling_indices=batch["sibling_indices"],
+                parent_key_ids=batch["parent_key_ids"],
+            )
+
+            logits: torch.Tensor = key_logits[0]  # remove batch dim
+            for pos in masked_positions.nonzero(as_tuple=True)[0]:
+                true_id: int = labels[pos].item()
+                pos_logits: torch.Tensor = logits[pos]
+                top5_ids: torch.Tensor = pos_logits.topk(5).indices
+
+                if top5_ids[0].item() == true_id:
+                    top1_correct += 1
+                if true_id in top5_ids.tolist():
+                    top5_correct += 1
+                total_masked += 1
+
+        return {
+            "top1_accuracy": top1_correct / max(total_masked, 1),
+            "top5_accuracy": top5_correct / max(total_masked, 1),
+            "total_masked": total_masked,
+        }
+
+    @torch.no_grad()
+    def analyze_embeddings(self) -> list[dict[str, Any]]:
+        """Compare embeddings of the same key at different tree positions."""
+        self.model.eval()
+        results: list[dict[str, Any]] = []
+
+        # Test pairs: same key, different (depth, parent_key) combinations
+        test_pairs: list[dict[str, Any]] = [
+            {
+                "key": "spec",
+                "position_a": {"depth": 0, "parent_key": ""},
+                "position_b": {"depth": 2, "parent_key": "template"},
+            },
+            {
+                "key": "name",
+                "position_a": {"depth": 1, "parent_key": "metadata"},
+                "position_b": {"depth": 1, "parent_key": "containers"},
+            },
+        ]
+
+        for pair in test_pairs:
+            key_id: int = self.vocab.encode_key(pair["key"])
+
+            token_ids: torch.Tensor = torch.tensor(
+                [[key_id, key_id]], device=self.device
+            )
+            node_types: torch.Tensor = torch.tensor(
+                [[0, 0]], device=self.device
+            )
+            depths: torch.Tensor = torch.tensor(
+                [[pair["position_a"]["depth"], pair["position_b"]["depth"]]],
+                device=self.device,
+            )
+            siblings: torch.Tensor = torch.tensor(
+                [[0, 0]], device=self.device
+            )
+            parent_a_id: int = self.vocab.encode_key(
+                pair["position_a"]["parent_key"]
+            )
+            parent_b_id: int = self.vocab.encode_key(
+                pair["position_b"]["parent_key"]
+            )
+            parent_keys: torch.Tensor = torch.tensor(
+                [[parent_a_id, parent_b_id]], device=self.device
+            )
+
+            embeddings: torch.Tensor = self.model.embedding(
+                token_ids, node_types, depths, siblings, parent_keys
+            )
+
+            cosine_sim: float = F.cosine_similarity(
+                embeddings[0, 0].unsqueeze(0),
+                embeddings[0, 1].unsqueeze(0),
+            ).item()
+
+            results.append({
+                "key": pair["key"],
+                "position_a": pair["position_a"],
+                "position_b": pair["position_b"],
+                "cosine_similarity": cosine_sim,
+            })
+
+        return results
+
+    @torch.no_grad()
+    def top_k_predictions(
+        self, doc_idx: int, k: int = 5
+    ) -> list[dict[str, Any]]:
+        """Show top-k predicted keys for each masked position in a document."""
+        self.model.eval()
+
+        item: dict[str, torch.Tensor] = self.dataset[doc_idx]
+        labels: torch.Tensor = item["labels"]
+
+        masked_positions: torch.Tensor = labels != -100
+        if not masked_positions.any():
+            return []
+
+        batch: dict[str, torch.Tensor] = {
+            k_: v.unsqueeze(0).to(self.device) for k_, v in item.items()
+        }
+
+        key_logits: torch.Tensor = self.model(
+            token_ids=batch["token_ids"],
+            node_types=batch["node_types"],
+            depths=batch["depths"],
+            sibling_indices=batch["sibling_indices"],
+            parent_key_ids=batch["parent_key_ids"],
+        )
+
+        logits: torch.Tensor = key_logits[0]
+        predictions: list[dict[str, Any]] = []
+
+        for pos in masked_positions.nonzero(as_tuple=True)[0]:
+            true_id: int = labels[pos].item()
+            pos_logits: torch.Tensor = logits[pos]
+            probs: torch.Tensor = F.softmax(pos_logits, dim=-1)
+            topk: torch.return_types.topk = probs.topk(k)
+
+            predicted_keys: list[dict[str, Any]] = [
+                {
+                    "key": self.vocab.decode_key(topk.indices[i].item()),
+                    "probability": topk.values[i].item(),
+                }
+                for i in range(k)
+            ]
+
+            predictions.append({
+                "position": pos.item(),
+                "true_key": self.vocab.decode_key(true_id),
+                "predicted_keys": predicted_keys,
+            })
+
+        return predictions
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_evaluate.py -v -s`
+Expected: ALL PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add yaml_bert/evaluate.py tests/test_evaluate.py
+git commit -m "feat: YamlBertEvaluator with accuracy, embedding analysis, top-k predictions"
+```
+
+---
+
+### Task 12: Training Visualizations
+
+Generate plots for training loss curve, embedding similarity heatmap, and attention patterns. Saves as PNG files.
+
+**Files:**
+- Create: `yaml_bert/visualize.py`
+- Create: `tests/test_visualize.py`
+
+- [ ] **Step 1: Add matplotlib dependency**
+
+Add to `requirements.txt`:
+
+```
+pyyaml>=6.0
+pytest>=7.0
+torch>=2.0
+matplotlib>=3.7
+```
+
+Run: `pip install -r requirements.txt`
+
+- [ ] **Step 2: Write failing test**
+
+File: `tests/test_visualize.py`
+
+```python
+import os
+
+from yaml_bert.visualize import plot_training_loss, plot_embedding_similarity, plot_attention_patterns
+
+
+def test_plot_training_loss(tmp_path):
+    losses = [5.2, 4.8, 4.1, 3.5, 3.0, 2.7, 2.4, 2.2, 2.0, 1.9]
+    output_path = str(tmp_path / "loss.png")
+
+    plot_training_loss(losses, output_path=output_path)
+
+    assert os.path.exists(output_path)
+    assert os.path.getsize(output_path) > 0
+
+
+def test_plot_embedding_similarity(tmp_path):
+    embedding_results = [
+        {
+            "key": "spec",
+            "position_a": {"depth": 0, "parent_key": ""},
+            "position_b": {"depth": 2, "parent_key": "template"},
+            "cosine_similarity": 0.45,
+        },
+        {
+            "key": "name",
+            "position_a": {"depth": 1, "parent_key": "metadata"},
+            "position_b": {"depth": 1, "parent_key": "containers"},
+            "cosine_similarity": 0.32,
+        },
+    ]
+    output_path = str(tmp_path / "embeddings.png")
+
+    plot_embedding_similarity(embedding_results, output_path=output_path)
+
+    assert os.path.exists(output_path)
+    assert os.path.getsize(output_path) > 0
+
+
+def test_plot_attention_patterns(tmp_path):
+    import torch
+    # Fake attention weights: (num_heads, seq_len, seq_len)
+    attention_weights = torch.rand(2, 8, 8)
+    token_labels = ["apiVersion", "apps/v1", "kind", "Deployment",
+                    "metadata", "name", "nginx", "spec"]
+    output_path = str(tmp_path / "attention.png")
+
+    plot_attention_patterns(
+        attention_weights,
+        token_labels=token_labels,
+        output_path=output_path,
+    )
+
+    assert os.path.exists(output_path)
+    assert os.path.getsize(output_path) > 0
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `pytest tests/test_visualize.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 4: Implement visualization functions**
+
+File: `yaml_bert/visualize.py`
+
+```python
+from __future__ import annotations
+
+from typing import Any
+
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend
+import matplotlib.pyplot as plt
+import torch
+
+
+def plot_training_loss(
+    losses: list[float],
+    output_path: str = "training_loss.png",
+    title: str = "YAML-BERT Training Loss",
+) -> None:
+    """Plot training loss curve over epochs."""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(range(1, len(losses) + 1), losses, marker="o", linewidth=2)
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Training loss plot saved: {output_path}")
+
+
+def plot_embedding_similarity(
+    results: list[dict[str, Any]],
+    output_path: str = "embedding_similarity.png",
+    title: str = "Tree Position Embedding Similarity",
+) -> None:
+    """Plot cosine similarity between same-key embeddings at different tree positions."""
+    labels: list[str] = []
+    similarities: list[float] = []
+
+    for r in results:
+        pa: dict[str, Any] = r["position_a"]
+        pb: dict[str, Any] = r["position_b"]
+        label: str = (
+            f"{r['key']}\n"
+            f"d={pa['depth']},p={pa['parent_key']}\n"
+            f"vs d={pb['depth']},p={pb['parent_key']}"
+        )
+        labels.append(label)
+        similarities.append(r["cosine_similarity"])
+
+    fig, ax = plt.subplots(figsize=(max(8, len(results) * 3), 6))
+    bars = ax.bar(range(len(results)), similarities, color="steelblue")
+    ax.set_xticks(range(len(results)))
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylabel("Cosine Similarity")
+    ax.set_title(title)
+    ax.set_ylim(-1, 1)
+    ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+
+    for bar, sim in zip(bars, similarities):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.02,
+            f"{sim:.3f}",
+            ha="center",
+            fontsize=10,
+        )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Embedding similarity plot saved: {output_path}")
+
+
+def plot_attention_patterns(
+    attention_weights: torch.Tensor,
+    token_labels: list[str],
+    output_path: str = "attention_patterns.png",
+    title: str = "Attention Patterns",
+) -> None:
+    """Plot attention heatmaps for each head.
+
+    Args:
+        attention_weights: (num_heads, seq_len, seq_len)
+        token_labels: labels for each position in the sequence
+    """
+    num_heads: int = attention_weights.shape[0]
+    fig, axes = plt.subplots(1, num_heads, figsize=(6 * num_heads, 5))
+
+    if num_heads == 1:
+        axes = [axes]
+
+    for head_idx, ax in enumerate(axes):
+        weights: torch.Tensor = attention_weights[head_idx].cpu()
+        im = ax.imshow(weights.numpy(), cmap="Blues", vmin=0, vmax=1)
+        ax.set_title(f"Head {head_idx}")
+        ax.set_xticks(range(len(token_labels)))
+        ax.set_yticks(range(len(token_labels)))
+        ax.set_xticklabels(token_labels, rotation=45, ha="right", fontsize=7)
+        ax.set_yticklabels(token_labels, fontsize=7)
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Attention pattern plot saved: {output_path}")
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `pytest tests/test_visualize.py -v`
+Expected: ALL PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add yaml_bert/visualize.py tests/test_visualize.py requirements.txt
+git commit -m "feat: visualization functions for loss, embeddings, and attention"
 ```
