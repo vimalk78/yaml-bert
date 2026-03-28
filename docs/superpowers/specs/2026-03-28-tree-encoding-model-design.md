@@ -75,7 +75,7 @@ flowchart LR
 
 ### Token Embedding
 
-Three embedding tables use the key vocabulary. One uses the value vocabulary. All are separate learned tables projecting to `hidden_dim`:
+Two embedding tables use key vocabulary IDs (`key_embedding` and `parent_key_embedding` — same IDs, independently learned weights). One uses value vocabulary IDs. The remaining three use their own integer indices (depth, sibling, node type). All project to `hidden_dim`:
 
 ```python
 # Token role: "I am this key/value"
