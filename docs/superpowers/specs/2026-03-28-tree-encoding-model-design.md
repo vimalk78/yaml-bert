@@ -151,38 +151,37 @@ status:
 
 The tree and its positional encoding components:
 
-```
-                            (root)
-                           /      \
-                         /          \
-        +--------------+              +--------------+
-        | spec         |              | status       |
-        | KEY, d=0     |              | KEY, d=0     |
-        | sib=0        |              | sib=1        |
-        | parent=root  |              | parent=root  |
-        +--------------+              +--------------+
-              |                             |
-    +-------------------+         +-------------------+
-    | replicas          |         | replicas          |
-    | KEY, d=1          |         | KEY, d=1          |
-    | sib=0             |         | sib=0             |
-    | parent=spec  [!!] |         | parent=status [!!]|
-    +-------------------+         +-------------------+
-              |                             |
-    +-------------------+         +-------------------+
-    | 3                 |         | 2                 |
-    | VALUE, d=1        |         | VALUE, d=1        |
-    | sib=0             |         | sib=0             |
-    | parent=replicas   |         | parent=replicas   |
-    +-------------------+         +-------------------+
+```mermaid
+flowchart TD
+    ROOT["root"]
+    SPEC["spec"]
+    REP1["replicas"]
+    VAL1["3"]
+    STATUS["status"]
+    REP2["replicas"]
+    VAL2["2"]
+
+    ROOT --> SPEC
+    ROOT --> STATUS
+    SPEC --> REP1
+    REP1 --> VAL1
+    STATUS --> REP2
+    REP2 --> VAL2
+
+    style REP1 fill:#f96,stroke:#333
+    style REP2 fill:#69f,stroke:#333
 ```
 
-Both `replicas` nodes have **identical** token, depth, sibling_index, and node_type. The **parent_key_embedding** is what distinguishes them:
+| Node | Token | Type | Depth | Sibling | Parent key |
+|------|-------|------|-------|---------|------------|
+| spec | spec | KEY | 0 | 0 | root |
+| status | status | KEY | 0 | 1 | root |
+| replicas (orange) | replicas | KEY | 1 | 0 | **spec** |
+| replicas (blue) | replicas | KEY | 1 | 0 | **status** |
+| 3 | 3 | VALUE | 1 | 0 | replicas |
+| 2 | 2 | VALUE | 1 | 0 | replicas |
 
-```
-replicas under spec:   depth_emb(1) + sib_emb(0) + type_emb(KEY) + parent_emb("spec")   --> orange
-replicas under status: depth_emb(1) + sib_emb(0) + type_emb(KEY) + parent_emb("status")  --> blue
-```
+Both `replicas` nodes have identical token, depth, sibling_index, and node_type. Only the **parent key** column differs — this is what `parent_key_embedding` captures.
 
 ### Why This Design
 
