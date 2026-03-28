@@ -136,7 +136,7 @@ tree_pos = (depth_embedding(depth)
 | `node_type_embedding` | 4 x d_model | KEY, VALUE, LIST_KEY, LIST_VALUE |
 | `parent_key_embedding` | key_vocab_size x d_model | Immediate parent key |
 
-**`parent_key_id`** is extracted from `parent_path`: the last non-numeric component. For a node with `parent_path="spec.template.spec.containers.0"`, the parent key is `"containers"`.
+**`parent_key_id`** is extracted from `parent_path`: the last non-numeric component. For a node with `parent_path="spec.template.spec.containers.0"`, the parent key is `"containers"`. See the [Phase 1 tokenizer design](2026-03-28-yaml-tokenizer-design.md) for how `parent_path` is constructed during linearization.
 
 ### Concrete Example: YAML Tree to Embeddings
 
