@@ -151,25 +151,30 @@ status:
 
 The tree and its positional encoding components:
 
-```mermaid
-flowchart TD
-    ROOT["(root)"]
-    SPEC["spec<br/>KEY, depth=0, sib=0<br/>parent=root"]
-    REP1["replicas<br/>KEY, depth=1, sib=0<br/>parent=spec"]
-    VAL1["3<br/>VALUE, depth=1, sib=0<br/>parent=spec.replicas"]
-    STATUS["status<br/>KEY, depth=0, sib=1<br/>parent=root"]
-    REP2["replicas<br/>KEY, depth=1, sib=0<br/>parent=status"]
-    VAL2["2<br/>VALUE, depth=1, sib=0<br/>parent=status.replicas"]
-
-    ROOT --> SPEC
-    ROOT --> STATUS
-    SPEC --> REP1
-    REP1 --> VAL1
-    STATUS --> REP2
-    REP2 --> VAL2
-
-    style REP1 fill:#f96,stroke:#333
-    style REP2 fill:#69f,stroke:#333
+```
+                            (root)
+                           /      \
+                         /          \
+        +--------------+              +--------------+
+        | spec         |              | status       |
+        | KEY, d=0     |              | KEY, d=0     |
+        | sib=0        |              | sib=1        |
+        | parent=root  |              | parent=root  |
+        +--------------+              +--------------+
+              |                             |
+    +-------------------+         +-------------------+
+    | replicas          |         | replicas          |
+    | KEY, d=1          |         | KEY, d=1          |
+    | sib=0             |         | sib=0             |
+    | parent=spec  [!!] |         | parent=status [!!]|
+    +-------------------+         +-------------------+
+              |                             |
+    +-------------------+         +-------------------+
+    | 3                 |         | 2                 |
+    | VALUE, d=1        |         | VALUE, d=1        |
+    | sib=0             |         | sib=0             |
+    | parent=replicas   |         | parent=replicas   |
+    +-------------------+         +-------------------+
 ```
 
 Both `replicas` nodes have **identical** token, depth, sibling_index, and node_type. The **parent_key_embedding** is what distinguishes them:
