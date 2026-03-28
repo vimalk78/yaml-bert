@@ -5,6 +5,7 @@ import os
 import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.dataset import YamlDataset, collate_fn
@@ -71,7 +72,12 @@ class YamlBertTrainer:
             total_loss: float = 0.0
             num_batches: int = 0
 
-            for batch in dataloader:
+            pbar = tqdm(
+                dataloader,
+                desc=f"Epoch {epoch + 1}/{self.config.num_epochs}",
+                leave=True,
+            )
+            for batch in pbar:
                 batch = {k: v.to(self.device) for k, v in batch.items()}
 
                 optimizer.zero_grad()
@@ -94,6 +100,7 @@ class YamlBertTrainer:
 
                 total_loss += loss.item()
                 num_batches += 1
+                pbar.set_postfix(loss=f"{total_loss / num_batches:.4f}")
 
             avg_loss: float = total_loss / max(num_batches, 1)
             epoch_losses.append(avg_loss)
