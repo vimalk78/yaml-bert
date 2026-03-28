@@ -71,7 +71,7 @@ flowchart LR
 | `depth_embedding` | max_depth x hidden_dim | depth integer (0, 1, 2, ...) | "I am at this depth" — depth 0 = top-level keys like `apiVersion`, `kind`; depth 1 = `name`, `replicas`; deeper = nested fields |
 | `sibling_embedding` | max_sibling x hidden_dim | sibling_index integer (0, 1, 2, ...) | "I am the Nth child" — in K8s, key ordering follows conventions: `apiVersion` is often sibling 0, `kind` sibling 1 under root |
 | `node_type_embedding` | 4 x hidden_dim | NodeType enum (0-3) | "I am KEY / VALUE / LIST_KEY / LIST_VALUE" — structural role of this node |
-| `parent_key_embedding` | key_vocab_size x hidden_dim | parent's key token ID | "My parent is this key" — same vocab as `key_embedding` but separate learned weights; distinguishes `replicas` under `spec` vs under `status` |
+| `parent_key_embedding` | key_vocab_size x hidden_dim | parent's key token ID (looked up by child) | "My parent is this key" — the child looks up its parent's key ID and gets a vector representing the parent-child relationship. This vector is distinct from what the parent gets from `key_embedding` for the same key: `parent_key_embedding["spec"]` ("spec is my parent") differs from `key_embedding["spec"]` ("I am spec") |
 
 ### Token Embedding
 
