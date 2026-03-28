@@ -42,7 +42,110 @@ git commit -m "chore: add PyTorch dependency"
 
 ---
 
-### Task 2: Vocabulary — Add parent_key_id Extraction
+### Task 2: YamlBertConfig Dataclass
+
+Central configuration for all hyperparameters. Change values in one place.
+
+**Files:**
+- Create: `yaml_bert/config.py`
+- Create: `tests/test_config.py`
+
+- [ ] **Step 1: Write failing test**
+
+File: `tests/test_config.py`
+
+```python
+from yaml_bert.config import YamlBertConfig
+
+
+def test_default_config():
+    config = YamlBertConfig()
+
+    assert config.d_model == 256
+    assert config.num_layers == 6
+    assert config.num_heads == 8
+    assert config.d_ff == 1024
+    assert config.max_depth == 16
+    assert config.max_sibling == 32
+    assert config.mask_prob == 0.15
+    assert config.lr == 1e-4
+    assert config.batch_size == 32
+    assert config.num_epochs == 30
+    assert config.max_seq_len == 512
+
+
+def test_custom_config():
+    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
+
+    assert config.d_model == 64
+    assert config.num_layers == 2
+    assert config.num_heads == 2
+    # d_ff follows d_model by default
+    assert config.d_ff == 256
+
+
+def test_d_ff_defaults_to_4x_d_model():
+    config = YamlBertConfig(d_model=128)
+    assert config.d_ff == 512
+
+    config_custom = YamlBertConfig(d_model=128, d_ff=1024)
+    assert config_custom.d_ff == 1024
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `pytest tests/test_config.py -v`
+Expected: FAIL with `ModuleNotFoundError`
+
+- [ ] **Step 3: Implement YamlBertConfig**
+
+File: `yaml_bert/config.py`
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class YamlBertConfig:
+    """Central configuration for YAML-BERT hyperparameters."""
+
+    # Model architecture
+    d_model: int = 256
+    num_layers: int = 6
+    num_heads: int = 8
+    d_ff: int = 0  # 0 means "auto: 4 * d_model"
+    max_depth: int = 16
+    max_sibling: int = 32
+
+    # Training
+    mask_prob: float = 0.15
+    lr: float = 1e-4
+    batch_size: int = 32
+    num_epochs: int = 30
+    max_seq_len: int = 512
+
+    def __post_init__(self) -> None:
+        if self.d_ff == 0:
+            self.d_ff = 4 * self.d_model
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/test_config.py -v`
+Expected: ALL PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add yaml_bert/config.py tests/test_config.py
+git commit -m "feat: YamlBertConfig dataclass for centralized hyperparameters"
+```
+
+---
+
+### Task 3: Vocabulary — Add parent_key_id Extraction
 
 The embedding layer needs `parent_key_id` for each node — the last non-numeric component of `parent_path`, encoded as a key vocab ID. Add a helper method to `Vocabulary`.
 
@@ -166,7 +269,7 @@ git commit -m "feat: add extract_parent_key to Vocabulary"
 
 ---
 
-### Task 3: YamlBertEmbedding
+### Task 4: YamlBertEmbedding
 
 The core novel component — six embedding tables summed into input vectors.
 
@@ -180,19 +283,23 @@ File: `tests/test_embedding.py`
 
 ```python
 import torch
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.types import NodeType
 
 
+def _make_embedding(d_model: int = 64, key_vocab: int = 100, val_vocab: int = 200) -> YamlBertEmbedding:
+    config = YamlBertConfig(d_model=d_model)
+    return YamlBertEmbedding(
+        config=config,
+        key_vocab_size=key_vocab,
+        value_vocab_size=val_vocab,
+    )
+
+
 def test_embedding_output_shape():
     d_model = 64
-    emb = YamlBertEmbedding(
-        key_vocab_size=100,
-        value_vocab_size=200,
-        d_model=d_model,
-        max_depth=16,
-        max_sibling=32,
-    )
+    emb = _make_embedding(d_model=d_model)
 
     batch_size = 2
     seq_len = 5
@@ -209,14 +316,7 @@ def test_embedding_output_shape():
 
 def test_embedding_routes_by_node_type():
     """KEY/LIST_KEY use key_embedding, VALUE/LIST_VALUE use value_embedding."""
-    d_model = 32
-    emb = YamlBertEmbedding(
-        key_vocab_size=10,
-        value_vocab_size=10,
-        d_model=d_model,
-        max_depth=16,
-        max_sibling=32,
-    )
+    emb = _make_embedding(d_model=32, key_vocab=10, val_vocab=10)
 
     token_ids = torch.tensor([[5, 5]])  # same token ID
     depths = torch.tensor([[0, 0]])
@@ -237,14 +337,7 @@ def test_embedding_routes_by_node_type():
 
 def test_different_parent_keys_produce_different_embeddings():
     """Two nodes differing only in parent_key should get different embeddings."""
-    d_model = 32
-    emb = YamlBertEmbedding(
-        key_vocab_size=10,
-        value_vocab_size=10,
-        d_model=d_model,
-        max_depth=16,
-        max_sibling=32,
-    )
+    emb = _make_embedding(d_model=32, key_vocab=10, val_vocab=10)
 
     token_ids = torch.tensor([[3]])
     node_types = torch.tensor([[0]])  # KEY
@@ -275,16 +368,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.types import NodeType
-
-
-# Map NodeType enum values to integer indices for embedding lookup
-NODE_TYPE_TO_INDEX: dict[NodeType, int] = {
-    NodeType.KEY: 0,
-    NodeType.VALUE: 1,
-    NodeType.LIST_KEY: 2,
-    NodeType.LIST_VALUE: 3,
-}
 
 
 class YamlBertEmbedding(nn.Module):
@@ -297,25 +382,25 @@ class YamlBertEmbedding(nn.Module):
 
     def __init__(
         self,
+        config: YamlBertConfig,
         key_vocab_size: int,
         value_vocab_size: int,
-        d_model: int,
-        max_depth: int = 16,
-        max_sibling: int = 32,
     ) -> None:
         super().__init__()
 
+        d: int = config.d_model
+
         # Token embeddings — separate tables for keys and values
-        self.key_embedding: nn.Embedding = nn.Embedding(key_vocab_size, d_model)
-        self.value_embedding: nn.Embedding = nn.Embedding(value_vocab_size, d_model)
+        self.key_embedding: nn.Embedding = nn.Embedding(key_vocab_size, d)
+        self.value_embedding: nn.Embedding = nn.Embedding(value_vocab_size, d)
 
         # Tree positional encoding components
-        self.depth_embedding: nn.Embedding = nn.Embedding(max_depth, d_model)
-        self.sibling_embedding: nn.Embedding = nn.Embedding(max_sibling, d_model)
-        self.node_type_embedding: nn.Embedding = nn.Embedding(4, d_model)
-        self.parent_key_embedding: nn.Embedding = nn.Embedding(key_vocab_size, d_model)
+        self.depth_embedding: nn.Embedding = nn.Embedding(config.max_depth, d)
+        self.sibling_embedding: nn.Embedding = nn.Embedding(config.max_sibling, d)
+        self.node_type_embedding: nn.Embedding = nn.Embedding(4, d)
+        self.parent_key_embedding: nn.Embedding = nn.Embedding(key_vocab_size, d)
 
-        self.layer_norm: nn.LayerNorm = nn.LayerNorm(d_model)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(d)
 
     def forward(
         self,
@@ -360,7 +445,7 @@ git commit -m "feat: YamlBertEmbedding with tree positional encoding"
 
 ---
 
-### Task 4: YamlBertModel
+### Task 5: YamlBertModel
 
 Wraps embedding + TransformerEncoder + key prediction head.
 
@@ -374,27 +459,32 @@ File: `tests/test_model.py`
 
 ```python
 import torch
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
 
 
-def test_model_output_shape():
-    d_model = 64
-    key_vocab_size = 100
+# Small config for fast tests
+TEST_CONFIG: YamlBertConfig = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
+KEY_VOCAB_SIZE: int = 100
+VALUE_VOCAB_SIZE: int = 200
+
+
+def _make_model() -> YamlBertModel:
     emb = YamlBertEmbedding(
-        key_vocab_size=key_vocab_size,
-        value_vocab_size=200,
-        d_model=d_model,
-        max_depth=16,
-        max_sibling=32,
+        config=TEST_CONFIG,
+        key_vocab_size=KEY_VOCAB_SIZE,
+        value_vocab_size=VALUE_VOCAB_SIZE,
     )
-    model = YamlBertModel(
+    return YamlBertModel(
+        config=TEST_CONFIG,
         embedding=emb,
-        d_model=d_model,
-        num_layers=2,
-        num_heads=2,
-        key_vocab_size=key_vocab_size,
+        key_vocab_size=KEY_VOCAB_SIZE,
     )
+
+
+def test_model_output_shape():
+    model = _make_model()
 
     batch_size = 2
     seq_len = 5
@@ -406,24 +496,11 @@ def test_model_output_shape():
 
     key_logits = model(token_ids, node_types, depths, siblings, parent_keys)
 
-    assert key_logits.shape == (batch_size, seq_len, key_vocab_size)
+    assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
 
 
 def test_model_with_padding_mask():
-    d_model = 64
-    key_vocab_size = 100
-    emb = YamlBertEmbedding(
-        key_vocab_size=key_vocab_size,
-        value_vocab_size=200,
-        d_model=d_model,
-    )
-    model = YamlBertModel(
-        embedding=emb,
-        d_model=d_model,
-        num_layers=2,
-        num_heads=2,
-        key_vocab_size=key_vocab_size,
-    )
+    model = _make_model()
 
     batch_size = 2
     seq_len = 5
@@ -433,7 +510,6 @@ def test_model_with_padding_mask():
     siblings = torch.randint(0, 3, (batch_size, seq_len))
     parent_keys = torch.randint(0, 50, (batch_size, seq_len))
 
-    # Second sequence is shorter — last 2 positions are padding
     padding_mask = torch.tensor([
         [False, False, False, False, False],
         [False, False, False, True, True],
@@ -444,24 +520,11 @@ def test_model_with_padding_mask():
         padding_mask=padding_mask,
     )
 
-    assert key_logits.shape == (batch_size, seq_len, key_vocab_size)
+    assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
 
 
 def test_model_loss_computation():
-    d_model = 64
-    key_vocab_size = 100
-    emb = YamlBertEmbedding(
-        key_vocab_size=key_vocab_size,
-        value_vocab_size=200,
-        d_model=d_model,
-    )
-    model = YamlBertModel(
-        embedding=emb,
-        d_model=d_model,
-        num_layers=2,
-        num_heads=2,
-        key_vocab_size=key_vocab_size,
-    )
+    model = _make_model()
 
     batch_size = 2
     seq_len = 5
@@ -471,10 +534,9 @@ def test_model_loss_computation():
     siblings = torch.randint(0, 3, (batch_size, seq_len))
     parent_keys = torch.randint(0, 50, (batch_size, seq_len))
 
-    # Labels: -100 for non-masked, valid key ID for masked
     labels = torch.full((batch_size, seq_len), -100, dtype=torch.long)
-    labels[0, 1] = 10  # masked position
-    labels[1, 0] = 20  # masked position
+    labels[0, 1] = 10
+    labels[1, 0] = 20
 
     key_logits = model(token_ids, node_types, depths, siblings, parent_keys)
     loss = model.compute_loss(key_logits, labels)
@@ -499,6 +561,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 
 
@@ -511,10 +574,8 @@ class YamlBertModel(nn.Module):
 
     def __init__(
         self,
+        config: YamlBertConfig,
         embedding: YamlBertEmbedding,
-        d_model: int,
-        num_layers: int,
-        num_heads: int,
         key_vocab_size: int,
     ) -> None:
         super().__init__()
@@ -522,16 +583,16 @@ class YamlBertModel(nn.Module):
         self.embedding: YamlBertEmbedding = embedding
 
         encoder_layer: nn.TransformerEncoderLayer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=num_heads,
-            dim_feedforward=d_model * 4,
+            d_model=config.d_model,
+            nhead=config.num_heads,
+            dim_feedforward=config.d_ff,
             batch_first=True,
         )
         self.encoder: nn.TransformerEncoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers
+            encoder_layer, num_layers=config.num_layers
         )
 
-        self.key_prediction_head: nn.Linear = nn.Linear(d_model, key_vocab_size)
+        self.key_prediction_head: nn.Linear = nn.Linear(config.d_model, key_vocab_size)
         self.loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss(ignore_index=-100)
 
     def forward(
@@ -576,7 +637,7 @@ git commit -m "feat: YamlBertModel with transformer encoder and key prediction h
 
 ---
 
-### Task 5: YamlDataset — Node Encoding
+### Task 6: YamlDataset — Node Encoding
 
 Convert `YamlNode` lists into tensor-ready integer arrays (before masking).
 
@@ -592,6 +653,7 @@ File: `tests/test_dataset.py`
 import os
 
 import torch
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.dataset import YamlDataset
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.annotator import DomainAnnotator
@@ -655,12 +717,13 @@ def test_dataset_item_keys():
 def test_dataset_masking_only_keys():
     """Only KEY and LIST_KEY nodes should be masked, never VALUE or LIST_VALUE."""
     vocab = _build_vocab()
+    high_mask_config = YamlBertConfig(mask_prob=0.5)
     dataset = YamlDataset(
         yaml_dir=TEMPLATES_DIR,
         vocab=vocab,
         linearizer=YamlLinearizer(),
         annotator=DomainAnnotator(),
-        mask_prob=0.5,  # high prob to ensure some masking
+        config=high_mask_config,
     )
 
     item = dataset[0]
@@ -695,6 +758,7 @@ import torch
 from torch.utils.data import Dataset
 
 from yaml_bert.annotator import DomainAnnotator
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.types import NodeType, YamlNode
 from yaml_bert.vocab import Vocabulary
@@ -721,14 +785,14 @@ class YamlDataset(Dataset):
         vocab: Vocabulary,
         linearizer: YamlLinearizer,
         annotator: DomainAnnotator,
-        mask_prob: float = 0.15,
-        max_seq_len: int = 512,
+        config: YamlBertConfig | None = None,
     ) -> None:
+        config = config or YamlBertConfig()
         self.vocab: Vocabulary = vocab
         self.linearizer: YamlLinearizer = linearizer
         self.annotator: DomainAnnotator = annotator
-        self.mask_prob: float = mask_prob
-        self.max_seq_len: int = max_seq_len
+        self.mask_prob: float = config.mask_prob
+        self.max_seq_len: int = config.max_seq_len
 
         # Load and linearize all YAML files
         yaml_files: list[str] = sorted(
@@ -824,7 +888,7 @@ git commit -m "feat: YamlDataset with key-only masking"
 
 ---
 
-### Task 6: Collate Function for Batching
+### Task 7: Collate Function for Batching
 
 Pad variable-length sequences and create padding masks.
 
@@ -936,7 +1000,7 @@ git commit -m "feat: add collate_fn for batch padding"
 
 ---
 
-### Task 7: YamlBertTrainer
+### Task 8: YamlBertTrainer
 
 Training loop with optimizer, logging, and checkpointing.
 
@@ -949,9 +1013,11 @@ Training loop with optimizer, logging, and checkpointing.
 File: `tests/test_trainer.py`
 
 ```python
+import glob
 import os
 
 import torch
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
 from yaml_bert.dataset import YamlDataset
@@ -964,12 +1030,13 @@ TEMPLATES_DIR = os.path.join(
     os.path.dirname(__file__), "..", "data", "k8s-yamls"
 )
 
+TEST_CONFIG: YamlBertConfig = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
 
-def _build_model_and_dataset():
+
+def _build_model_and_dataset() -> tuple[YamlBertModel, YamlDataset]:
     linearizer = YamlLinearizer()
     annotator = DomainAnnotator()
 
-    import glob
     all_nodes = []
     for path in glob.glob(os.path.join(TEMPLATES_DIR, "**", "*.yaml"), recursive=True):
         nodes = linearizer.linearize_file(path)
@@ -983,19 +1050,17 @@ def _build_model_and_dataset():
         vocab=vocab,
         linearizer=YamlLinearizer(),
         annotator=DomainAnnotator(),
+        config=TEST_CONFIG,
     )
 
-    d_model = 64
     emb = YamlBertEmbedding(
+        config=TEST_CONFIG,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
-        d_model=d_model,
     )
     model = YamlBertModel(
+        config=TEST_CONFIG,
         embedding=emb,
-        d_model=d_model,
-        num_layers=2,
-        num_heads=2,
         key_vocab_size=vocab.key_vocab_size,
     )
 
@@ -1006,11 +1071,9 @@ def test_trainer_runs_one_epoch():
     model, dataset = _build_model_and_dataset()
 
     trainer = YamlBertTrainer(
+        config=TEST_CONFIG,
         model=model,
         dataset=dataset,
-        lr=1e-3,
-        batch_size=4,
-        num_epochs=1,
     )
 
     losses = trainer.train()
@@ -1020,14 +1083,13 @@ def test_trainer_runs_one_epoch():
 
 
 def test_trainer_loss_decreases():
+    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2, num_epochs=5)
     model, dataset = _build_model_and_dataset()
 
     trainer = YamlBertTrainer(
+        config=config,
         model=model,
         dataset=dataset,
-        lr=1e-3,
-        batch_size=4,
-        num_epochs=5,
     )
 
     losses = trainer.train()
@@ -1043,11 +1105,9 @@ def test_trainer_saves_checkpoint(tmp_path):
     model, dataset = _build_model_and_dataset()
 
     trainer = YamlBertTrainer(
+        config=TEST_CONFIG,
         model=model,
         dataset=dataset,
-        lr=1e-3,
-        batch_size=4,
-        num_epochs=1,
         checkpoint_dir=str(tmp_path),
     )
 
@@ -1076,6 +1136,7 @@ import torch
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.dataset import YamlDataset, collate_fn
 from yaml_bert.model import YamlBertModel
 
@@ -1085,19 +1146,15 @@ class YamlBertTrainer:
 
     def __init__(
         self,
+        config: YamlBertConfig,
         model: YamlBertModel,
         dataset: YamlDataset,
-        lr: float = 1e-4,
-        batch_size: int = 32,
-        num_epochs: int = 30,
         checkpoint_dir: str | None = None,
         checkpoint_every: int = 10,
     ) -> None:
+        self.config: YamlBertConfig = config
         self.model: YamlBertModel = model
         self.dataset: YamlDataset = dataset
-        self.lr: float = lr
-        self.batch_size: int = batch_size
-        self.num_epochs: int = num_epochs
         self.checkpoint_dir: str | None = checkpoint_dir
         self.checkpoint_every: int = checkpoint_every
 
@@ -1111,18 +1168,18 @@ class YamlBertTrainer:
         self.model.train()
 
         optimizer: AdamW = AdamW(
-            self.model.parameters(), lr=self.lr, weight_decay=0.01
+            self.model.parameters(), lr=self.config.lr, weight_decay=0.01
         )
         dataloader: DataLoader = DataLoader(
             self.dataset,
-            batch_size=self.batch_size,
+            batch_size=self.config.batch_size,
             shuffle=True,
             collate_fn=collate_fn,
         )
 
         epoch_losses: list[float] = []
 
-        for epoch in range(self.num_epochs):
+        for epoch in range(self.config.num_epochs):
             total_loss: float = 0.0
             num_batches: int = 0
 
@@ -1153,7 +1210,7 @@ class YamlBertTrainer:
 
             avg_loss: float = total_loss / max(num_batches, 1)
             epoch_losses.append(avg_loss)
-            print(f"Epoch {epoch + 1}/{self.num_epochs} — loss: {avg_loss:.4f}")
+            print(f"Epoch {epoch + 1}/{self.config.num_epochs} — loss: {avg_loss:.4f}")
 
             # Checkpoint
             if self.checkpoint_dir and (epoch + 1) % self.checkpoint_every == 0:
@@ -1161,7 +1218,7 @@ class YamlBertTrainer:
 
         # Save final checkpoint
         if self.checkpoint_dir:
-            self._save_checkpoint(self.num_epochs)
+            self._save_checkpoint(self.config.num_epochs)
 
         return epoch_losses
 
@@ -1189,7 +1246,7 @@ git commit -m "feat: YamlBertTrainer with training loop and checkpointing"
 
 ---
 
-### Task 8: Update Package Exports
+### Task 9: Update Package Exports
 
 **Files:**
 - Modify: `yaml_bert/__init__.py`
@@ -1201,6 +1258,7 @@ File: `yaml_bert/__init__.py`
 ```python
 """YAML-BERT: Attention on Kubernetes Structured Data."""
 
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.types import NodeType, YamlNode
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.vocab import Vocabulary, VocabBuilder
@@ -1211,6 +1269,7 @@ from yaml_bert.dataset import YamlDataset, collate_fn
 from yaml_bert.trainer import YamlBertTrainer
 
 __all__ = [
+    "YamlBertConfig",
     "NodeType",
     "YamlNode",
     "YamlLinearizer",
@@ -1244,7 +1303,7 @@ git commit -m "feat: update package exports with Phase 2 modules"
 
 ---
 
-### Task 9: End-to-End Integration Test
+### Task 10: End-to-End Integration Test
 
 Full pipeline: load YAML corpus, build vocab, create dataset, build model, train for a few epochs, verify convergence.
 
@@ -1260,6 +1319,7 @@ import glob
 import os
 
 import torch
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.dataset import YamlDataset
 from yaml_bert.embedding import YamlBertEmbedding
@@ -1270,6 +1330,10 @@ from yaml_bert.vocab import VocabBuilder
 
 TEMPLATES_DIR = os.path.join(
     os.path.dirname(__file__), "..", "data", "k8s-yamls"
+)
+
+TEST_CONFIG: YamlBertConfig = YamlBertConfig(
+    d_model=64, num_layers=2, num_heads=2, num_epochs=10, batch_size=8,
 )
 
 
@@ -1295,21 +1359,19 @@ def test_end_to_end_pipeline():
         vocab=vocab,
         linearizer=YamlLinearizer(),
         annotator=DomainAnnotator(),
+        config=TEST_CONFIG,
     )
     print(f"Dataset: {len(dataset)} documents")
 
     # Build model
-    d_model = 64
     emb = YamlBertEmbedding(
+        config=TEST_CONFIG,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
-        d_model=d_model,
     )
     model = YamlBertModel(
+        config=TEST_CONFIG,
         embedding=emb,
-        d_model=d_model,
-        num_layers=2,
-        num_heads=2,
         key_vocab_size=vocab.key_vocab_size,
     )
 
@@ -1319,11 +1381,9 @@ def test_end_to_end_pipeline():
 
     # Train
     trainer = YamlBertTrainer(
+        config=TEST_CONFIG,
         model=model,
         dataset=dataset,
-        lr=1e-3,
-        batch_size=8,
-        num_epochs=10,
     )
     losses = trainer.train()
 
@@ -1347,11 +1407,10 @@ def test_tree_position_differentiation():
 
     vocab = VocabBuilder().build(all_nodes)
 
-    d_model = 64
     emb = YamlBertEmbedding(
+        config=TEST_CONFIG,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
-        d_model=d_model,
     )
 
     # "spec" at depth 0, parent="root" (root-level spec)
