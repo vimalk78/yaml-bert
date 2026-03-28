@@ -55,6 +55,61 @@ class YamlDataset(Dataset):
                 annotator.annotate(nodes)
                 self.documents.append(nodes)
 
+    @classmethod
+    def from_huggingface(
+        cls,
+        dataset_name: str,
+        vocab: Vocabulary,
+        linearizer: YamlLinearizer,
+        annotator: DomainAnnotator,
+        config: YamlBertConfig | None = None,
+        max_docs: int | None = None,
+    ) -> "YamlDataset":
+        """Load dataset from HuggingFace Hub.
+
+        Args:
+            dataset_name: HuggingFace dataset ID, e.g. "substratusai/the-stack-yaml-k8s"
+            vocab: Pre-built vocabulary
+            linearizer: YamlLinearizer instance
+            annotator: DomainAnnotator instance
+            config: Optional config (uses defaults if None)
+            max_docs: Load at most this many documents (None = all)
+        """
+        from datasets import load_dataset
+
+        config = config or YamlBertConfig()
+        instance: YamlDataset = cls.__new__(cls)
+        instance.vocab = vocab
+        instance.linearizer = linearizer
+        instance.annotator = annotator
+        instance.mask_prob = config.mask_prob
+        instance.max_seq_len = config.max_seq_len
+        instance.documents = []
+
+        print(f"Loading dataset: {dataset_name}")
+        ds = load_dataset(dataset_name, split="train")
+
+        total: int = len(ds) if max_docs is None else min(max_docs, len(ds))
+        print(f"Linearizing {total:,} / {len(ds):,} documents...")
+
+        skipped: int = 0
+        for i in range(total):
+            yaml_content: str = ds[i]["content"]
+            try:
+                nodes: list[YamlNode] = linearizer.linearize(yaml_content)
+            except Exception:
+                skipped += 1
+                continue
+            if nodes:
+                annotator.annotate(nodes)
+                instance.documents.append(nodes)
+
+            if (i + 1) % 10000 == 0:
+                print(f"  {i + 1:,} / {total:,} processed ({skipped} skipped)")
+
+        print(f"Loaded {len(instance.documents):,} documents ({skipped} skipped)")
+        return instance
+
     def __len__(self) -> int:
         return len(self.documents)
 

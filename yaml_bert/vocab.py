@@ -98,18 +98,60 @@ class VocabBuilder:
 
         key_vocab = {
             token: i + offset
-            for i, (token, count) in enumerate(
-                sorted(key_counts.items())
+            for i, token in enumerate(
+                sorted(t for t, c in key_counts.items() if c >= min_freq)
             )
-            if count >= min_freq
         }
 
         value_vocab = {
             token: i + offset
-            for i, (token, count) in enumerate(
-                sorted(value_counts.items())
+            for i, token in enumerate(
+                sorted(t for t, c in value_counts.items() if c >= min_freq)
             )
-            if count >= min_freq
         }
 
         return Vocabulary(key_vocab, value_vocab, special_tokens)
+
+    def build_from_huggingface(
+        self,
+        dataset_name: str,
+        linearizer: "YamlLinearizer",
+        annotator: "DomainAnnotator",
+        max_docs: int | None = None,
+        min_freq: int = 1,
+    ) -> Vocabulary:
+        """Build vocabulary by scanning a HuggingFace dataset.
+
+        Args:
+            dataset_name: HuggingFace dataset ID
+            linearizer: YamlLinearizer instance
+            annotator: DomainAnnotator instance
+            max_docs: Scan at most this many docs for vocab (None = all)
+            min_freq: Minimum frequency to include a token
+        """
+        from datasets import load_dataset
+        from yaml_bert.types import YamlNode
+
+        print(f"Building vocabulary from: {dataset_name}")
+        ds = load_dataset(dataset_name, split="train")
+
+        total: int = len(ds) if max_docs is None else min(max_docs, len(ds))
+        print(f"Scanning {total:,} / {len(ds):,} documents for vocabulary...")
+
+        all_nodes: list[YamlNode] = []
+        skipped: int = 0
+        for i in range(total):
+            try:
+                nodes = linearizer.linearize(ds[i]["content"])
+            except Exception:
+                skipped += 1
+                continue
+            if nodes:
+                annotator.annotate(nodes)
+                all_nodes.extend(nodes)
+
+            if (i + 1) % 10000 == 0:
+                print(f"  {i + 1:,} / {total:,} scanned ({len(all_nodes):,} nodes)")
+
+        print(f"Scanned {total - skipped:,} docs, {len(all_nodes):,} nodes ({skipped} skipped)")
+        return self.build(all_nodes, min_freq=min_freq)
