@@ -54,6 +54,26 @@ class YamlLinearizer:
                         )
                     )
 
+    def linearize_file(self, path: str) -> list[YamlNode]:
+        with open(path) as f:
+            content = f.read()
+        nodes: list[YamlNode] = []
+        for doc in yaml.safe_load_all(content):
+            if doc is None:
+                continue
+            self._walk(doc, depth=0, parent_path="", nodes=nodes, in_list=False)
+        return nodes
+
+    def linearize_multi_doc(self, yaml_string: str) -> list[list[YamlNode]]:
+        result = []
+        for doc in yaml.safe_load_all(yaml_string):
+            if doc is None:
+                continue
+            nodes: list[YamlNode] = []
+            self._walk(doc, depth=0, parent_path="", nodes=nodes, in_list=False)
+            result.append(nodes)
+        return result
+
     def _walk_list(
         self,
         data: list,

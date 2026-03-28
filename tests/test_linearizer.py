@@ -1,5 +1,12 @@
+import glob
+import os
+
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.types import NodeType
+
+TEMPLATES_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "kubernetes-yaml-templates"
+)
 
 
 def test_simple_key_value_pairs():
@@ -215,3 +222,126 @@ def test_nested_list_in_list_item():
     assert nodes[7].node_type == NodeType.LIST_VALUE
     assert nodes[7].depth == 2
     assert nodes[7].parent_path == "containers.0.ports.1.containerPort"
+
+
+def test_multi_document():
+    yaml_str = "---\nkind: Deployment\n---\nkind: Service\n"
+    linearizer = YamlLinearizer()
+    docs = linearizer.linearize_multi_doc(yaml_str)
+
+    assert len(docs) == 2
+
+    assert len(docs[0]) == 2
+    assert docs[0][0].token == "kind"
+    assert docs[0][1].token == "Deployment"
+
+    assert len(docs[1]) == 2
+    assert docs[1][0].token == "kind"
+    assert docs[1][1].token == "Service"
+
+
+def test_linearize_file():
+    linearizer = YamlLinearizer()
+    path = os.path.join(TEMPLATES_DIR, "deployment", "deployment-nginx.yaml")
+    nodes = linearizer.linearize_file(path)
+
+    assert len(nodes) > 0
+
+    assert nodes[0].token == "apiVersion"
+    assert nodes[0].node_type == NodeType.KEY
+    assert nodes[1].token == "apps/v1"
+    assert nodes[1].node_type == NodeType.VALUE
+
+    kind_node = next(n for n in nodes if n.token == "kind")
+    assert kind_node.node_type == NodeType.KEY
+    deployment_node = next(n for n in nodes if n.token == "Deployment")
+    assert deployment_node.node_type == NodeType.VALUE
+
+
+def test_linearize_file_service():
+    linearizer = YamlLinearizer()
+    path = os.path.join(TEMPLATES_DIR, "service", "service-clusterip-nginx.yaml")
+    nodes = linearizer.linearize_file(path)
+
+    assert len(nodes) > 0
+    kind_node = next(n for n in nodes if n.token == "kind")
+    service_node = next(n for n in nodes if n.token == "Service")
+    assert kind_node.node_type == NodeType.KEY
+    assert service_node.node_type == NodeType.VALUE
+
+
+def test_empty_yaml():
+    linearizer = YamlLinearizer()
+    assert linearizer.linearize("") == []
+    assert linearizer.linearize("---") == []
+
+
+def test_boolean_and_null_values():
+    yaml_str = "enabled: true\ncount: 0\nmissing: null\n"
+    linearizer = YamlLinearizer()
+    nodes = linearizer.linearize(yaml_str)
+
+    assert nodes[1].token == "True"
+    assert nodes[3].token == "0"
+    assert nodes[5].token == "None"
+
+
+def test_deeply_nested():
+    yaml_str = "a:\n  b:\n    c:\n      d: leaf\n"
+    linearizer = YamlLinearizer()
+    nodes = linearizer.linearize(yaml_str)
+
+    assert nodes[0].token == "a"
+    assert nodes[0].depth == 0
+    assert nodes[0].parent_path == ""
+
+    assert nodes[1].token == "b"
+    assert nodes[1].depth == 1
+    assert nodes[1].parent_path == "a"
+
+    assert nodes[2].token == "c"
+    assert nodes[2].depth == 2
+    assert nodes[2].parent_path == "a.b"
+
+    assert nodes[3].token == "d"
+    assert nodes[3].depth == 3
+    assert nodes[3].parent_path == "a.b.c"
+
+    assert nodes[4].token == "leaf"
+    assert nodes[4].depth == 3
+    assert nodes[4].parent_path == "a.b.c.d"
+
+
+def test_integer_and_float_values():
+    yaml_str = "replicas: 3\ncpu: 0.5\n"
+    linearizer = YamlLinearizer()
+    nodes = linearizer.linearize(yaml_str)
+
+    assert nodes[1].token == "3"
+    assert nodes[1].node_type == NodeType.VALUE
+
+    assert nodes[3].token == "0.5"
+    assert nodes[3].node_type == NodeType.VALUE
+
+
+def test_linearize_all_kubernetes_templates():
+    """Smoke test: linearize every YAML file in kubernetes-yaml-templates/.
+    Ensures no crashes on real-world K8s manifests."""
+    linearizer = YamlLinearizer()
+    yaml_files = glob.glob(
+        os.path.join(TEMPLATES_DIR, "**", "*.yaml"), recursive=True
+    )
+    assert len(yaml_files) > 40, f"Expected 40+ YAML files, found {len(yaml_files)}"
+
+    total_nodes = 0
+    for path in yaml_files:
+        nodes = linearizer.linearize_file(path)
+        assert len(nodes) > 0, f"Empty linearization for {path}"
+        for node in nodes:
+            assert node.token is not None
+            assert node.node_type is not None
+            assert node.depth >= 0
+            assert node.sibling_index >= 0
+        total_nodes += len(nodes)
+
+    assert total_nodes > 500, f"Expected 500+ total nodes, got {total_nodes}"
