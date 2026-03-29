@@ -75,13 +75,17 @@ def build_or_load_cache(
     # Extract YAML content strings
     yaml_contents: list[str] = [ds[i]["content"] for i in range(total)]
 
-    # Parallel linearization
+    # Parallel linearization with progress bar
+    from tqdm import tqdm
+
     start = time.time()
     workers: int = num_workers or cpu_count()
     with Pool(workers) as pool:
-        results: list[list[YamlNode] | None] = pool.map(
-            _linearize_one, yaml_contents, chunksize=500
-        )
+        results: list[list[YamlNode] | None] = list(tqdm(
+            pool.imap(_linearize_one, yaml_contents, chunksize=500),
+            total=len(yaml_contents),
+            desc="Linearizing",
+        ))
 
     documents = [doc for doc in results if doc is not None]
     skipped: int = sum(1 for doc in results if doc is None)
