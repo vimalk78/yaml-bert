@@ -20,6 +20,7 @@ import torch.nn.functional as F
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.annotator import DomainAnnotator
+from yaml_bert.dataset import _extract_kind
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
@@ -1284,9 +1285,13 @@ def run_test(
 
     token_ids[mask_pos] = vocab.special_tokens["[MASK]"]
 
+    kind: str = _extract_kind(nodes)
+    kind_id: int = vocab.encode_kind(kind)
+    kind_ids: list[int] = [kind_id] * len(nodes)
+
     t = lambda x: torch.tensor([x])
     with torch.no_grad():
-        logits = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys))
+        logits = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids))
 
     probs = F.softmax(logits[0, mask_pos], dim=-1)
     topk = probs.topk(10)
@@ -1343,7 +1348,7 @@ def main() -> None:
 
     vocab: Vocabulary = Vocabulary.load(args.vocab)
     config: YamlBertConfig = YamlBertConfig()
-    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size)
+    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
     model = YamlBertModel(config=config, embedding=emb, key_vocab_size=vocab.key_vocab_size)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])

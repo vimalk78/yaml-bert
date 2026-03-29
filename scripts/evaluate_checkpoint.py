@@ -71,6 +71,7 @@ def main() -> None:
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
+        kind_vocab_size=vocab.kind_vocab_size,
     )
     model: YamlBertModel = YamlBertModel(
         config=config,

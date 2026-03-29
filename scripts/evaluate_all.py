@@ -50,7 +50,7 @@ def main() -> None:
 
     from yaml_bert.config import YamlBertConfig
     from yaml_bert.annotator import DomainAnnotator
-    from yaml_bert.dataset import YamlDataset
+    from yaml_bert.dataset import YamlDataset, _extract_kind
     from yaml_bert.embedding import YamlBertEmbedding
     from yaml_bert.evaluate import YamlBertEvaluator
     from yaml_bert.linearizer import YamlLinearizer
@@ -63,7 +63,7 @@ def main() -> None:
     vocab: Vocabulary = Vocabulary.load(args.vocab)
     config: YamlBertConfig = YamlBertConfig()
 
-    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size)
+    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
     model = YamlBertModel(config=config, embedding=emb, key_vocab_size=vocab.key_vocab_size)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -152,9 +152,12 @@ def main() -> None:
             return []
 
         token_ids[mask_pos] = vocab.special_tokens["[MASK]"]
+        kind: str = _extract_kind(nodes)
+        kind_id: int = vocab.encode_kind(kind)
+        kind_ids: list[int] = [kind_id] * len(nodes)
         t = lambda x: torch.tensor([x])
         with torch.no_grad():
-            logits = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys))
+            logits = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids))
         probs = F.softmax(logits[0, mask_pos], dim=-1)
         topk = probs.topk(k)
         return [(vocab.decode_key(topk.indices[i].item()), topk.values[i].item()) for i in range(k)]
@@ -332,8 +335,11 @@ spec:
             token_labels.append(f"{prefix}{node.token[:20]}")
 
         t = lambda x: torch.tensor([x])
+        kind: str = _extract_kind(nodes)
+        kind_id: int = vocab.encode_kind(kind)
+        kind_ids: list[int] = [kind_id] * len(nodes)
         attn_weights = model.get_attention_weights(
-            t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys)
+            t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids)
         )
 
         # Find top patterns

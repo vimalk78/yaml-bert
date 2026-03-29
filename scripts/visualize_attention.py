@@ -14,7 +14,7 @@ import torch
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.annotator import DomainAnnotator
-from yaml_bert.dataset import YamlDataset
+from yaml_bert.dataset import YamlDataset, _extract_kind
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
@@ -49,6 +49,7 @@ def main() -> None:
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
+        kind_vocab_size=vocab.kind_vocab_size,
     )
     model: YamlBertModel = YamlBertModel(
         config=config,
@@ -114,9 +115,14 @@ def main() -> None:
     t_siblings: torch.Tensor = torch.tensor([sibling_indices])
     t_parent_keys: torch.Tensor = torch.tensor([parent_key_ids])
 
+    kind: str = _extract_kind(nodes)
+    kind_id: int = vocab.encode_kind(kind)
+    kind_ids: list[int] = [kind_id] * len(nodes)
+    t_kind_ids: torch.Tensor = torch.tensor([kind_ids])
+
     print("Extracting attention weights...")
     attention_weights: list[torch.Tensor] = model.get_attention_weights(
-        t_token_ids, t_node_types, t_depths, t_siblings, t_parent_keys
+        t_token_ids, t_node_types, t_depths, t_siblings, t_parent_keys, kind_ids=t_kind_ids
     )
 
     print(f"Got {len(attention_weights)} layers, {attention_weights[0].shape[1]} heads each")
