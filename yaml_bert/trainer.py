@@ -40,6 +40,8 @@ class YamlBertTrainer:
         self.model.to(self.device)
         self.model.train()
 
+        from datetime import datetime
+        print(f"Training started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         num_params: int = sum(p.numel() for p in self.model.parameters())
         print(f"Model parameters: {num_params:,}")
         print(f"Config: d_model={self.config.d_model}, layers={self.config.num_layers}, heads={self.config.num_heads}")
