@@ -1245,6 +1245,428 @@ metadata:
         ],
     ))
 
+    # ==========================================================
+    # CAPABILITY 21: Kind-specific spec children
+    # Different resource kinds have different valid keys under spec.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Kind-specific spec children",
+        description="Different resource kinds have different valid keys under spec",
+        tests=[
+            TestCase(
+                name="Pod spec has containers directly",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: nginx
+""",
+                mask_token="containers",
+                expect_in_top5=["containers"],
+                expect_not_top1=["template", "replicas"],
+            ),
+            TestCase(
+                name="Deployment spec has template not containers",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+""",
+                mask_token="template",
+                expect_in_top5=["template"],
+            ),
+            TestCase(
+                name="DaemonSet spec does not have replicas",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: monitor
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: monitor
+  template:
+    spec:
+      containers:
+      - name: agent
+        image: monitor:latest
+""",
+                mask_token="updateStrategy",
+                expect_in_top5=["updateStrategy", "selector", "template"],
+                expect_not_top1=["replicas"],
+            ),
+            TestCase(
+                name="CronJob spec has schedule",
+                yaml_text="""\
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cron
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: job
+            image: busybox
+""",
+                mask_token="schedule",
+                expect_in_top5=["schedule", "jobTemplate"],
+            ),
+            TestCase(
+                name="ConfigMap has data not spec",
+                yaml_text="""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+data:
+  key1: value1
+  key2: value2
+""",
+                mask_token="data",
+                expect_in_top5=["data"],
+                expect_not_top1=["spec"],
+            ),
+            TestCase(
+                name="Secret has data not spec",
+                yaml_text="""\
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret
+type: Opaque
+data:
+  password: cGFzc3dvcmQ=
+""",
+                mask_token="data",
+                expect_in_top5=["data"],
+                expect_not_top1=["spec"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 22: Kind-specific invalid structure rejection
+    # Model rejects keys that are wrong for the document's kind.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Kind-specific invalid structure rejection",
+        description="Model rejects keys that are wrong for the document's kind",
+        tests=[
+            TestCase(
+                name="replicas in Pod spec (WRONG)",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  replicas: 3
+  containers:
+  - name: app
+    image: nginx
+""",
+                mask_token="replicas",
+                expect_not_top1=["replicas"],
+            ),
+            TestCase(
+                name="containers directly in Deployment spec (WRONG)",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 1
+  containers:
+  - name: app
+    image: nginx
+""",
+                mask_token="containers",
+                expect_not_top1=["containers"],
+            ),
+            TestCase(
+                name="template in Pod spec (WRONG)",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+""",
+                mask_token="template",
+                expect_not_top1=["template"],
+            ),
+            TestCase(
+                name="spec in ConfigMap (WRONG)",
+                yaml_text="""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+spec:
+  key1: value1
+""",
+                mask_token="spec",
+                expect_not_top1=["spec"],
+            ),
+            TestCase(
+                name="spec in Secret (WRONG)",
+                yaml_text="""\
+apiVersion: v1
+kind: Secret
+metadata:
+  name: secret
+type: Opaque
+spec:
+  password: secret123
+""",
+                mask_token="spec",
+                expect_not_top1=["spec"],
+            ),
+            TestCase(
+                name="schedule in Deployment (WRONG — CronJob field)",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  schedule: "*/5 * * * *"
+  replicas: 1
+""",
+                mask_token="schedule",
+                expect_not_top1=["schedule"],
+            ),
+            TestCase(
+                name="serviceName in Deployment (WRONG — StatefulSet field)",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  serviceName: headless
+  replicas: 1
+""",
+                mask_token="serviceName",
+                expect_not_top1=["serviceName"],
+            ),
+            TestCase(
+                name="replicas in Service spec (WRONG)",
+                yaml_text="""\
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+spec:
+  replicas: 3
+  ports:
+  - port: 80
+""",
+                mask_token="replicas",
+                expect_not_top1=["replicas"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 23: Same structure, different kind
+    # Identical tree position yields different predictions based on kind.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Same structure different kind",
+        description="Identical tree position yields different predictions based on kind",
+        tests=[
+            TestCase(
+                name="First key under Deployment spec",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 3
+""",
+                mask_token="replicas",
+                expect_in_top5=["replicas", "selector", "template"],
+            ),
+            TestCase(
+                name="First key under Service spec",
+                yaml_text="""\
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+spec:
+  type: ClusterIP
+""",
+                mask_token="type",
+                expect_in_top5=["type", "ports", "selector"],
+            ),
+            TestCase(
+                name="First key under Pod spec",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: nginx
+""",
+                mask_token="containers",
+                expect_in_top5=["containers", "volumes", "nodeSelector"],
+            ),
+            TestCase(
+                name="First key under Job spec",
+                yaml_text="""\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job
+spec:
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+      restartPolicy: Never
+""",
+                mask_token="template",
+                expect_in_top5=["template", "backoffLimit", "completions"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 24: Kind embedding does not harm valid structures
+    # Adding kind embedding does not reduce accuracy on valid YAMLs.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Kind embedding preserves valid structures",
+        description="Adding kind embedding does not reduce accuracy on valid YAMLs",
+        tests=[
+            TestCase(
+                name="Valid Deployment keys correct",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+""",
+                mask_token="replicas",
+                expect_in_top5=["replicas"],
+                expect_confidence_above=0.50,
+            ),
+            TestCase(
+                name="Valid Service keys correct",
+                yaml_text="""\
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+spec:
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+""",
+                mask_token="selector",
+                expect_in_top5=["selector"],
+                expect_confidence_above=0.50,
+            ),
+            TestCase(
+                name="Valid Pod keys correct",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+""",
+                mask_token="containers",
+                expect_in_top5=["containers"],
+                expect_confidence_above=0.50,
+            ),
+            TestCase(
+                name="Valid ConfigMap keys correct",
+                yaml_text="""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+data:
+  key: value
+""",
+                mask_token="data",
+                expect_in_top5=["data"],
+                expect_confidence_above=0.50,
+            ),
+            TestCase(
+                name="Valid StatefulSet keys correct",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+spec:
+  serviceName: db
+  replicas: 3
+  selector:
+    matchLabels:
+      app: db
+  template:
+    spec:
+      containers:
+      - name: db
+        image: postgres
+""",
+                mask_token="serviceName",
+                expect_in_top5=["serviceName"],
+                expect_confidence_above=0.30,
+            ),
+        ],
+    ))
+
     return capabilities
 
 
