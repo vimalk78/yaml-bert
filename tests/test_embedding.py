@@ -62,3 +62,52 @@ def test_different_parent_keys_produce_different_embeddings():
     out_b = emb(token_ids, node_types, depths, siblings, parent_b)
 
     assert not torch.allclose(out_a, out_b)
+
+
+def test_embedding_with_kind():
+    config = YamlBertConfig(d_model=32)
+    emb = YamlBertEmbedding(
+        config=config,
+        key_vocab_size=10,
+        value_vocab_size=10,
+        kind_vocab_size=5,
+    )
+    token_ids = torch.tensor([[3, 3]])
+    node_types = torch.tensor([[0, 0]])
+    depths = torch.tensor([[1, 1]])
+    siblings = torch.tensor([[0, 0]])
+    parent_keys = torch.tensor([[4, 4]])
+    kind_ids = torch.tensor([[1, 1]])
+
+    output = emb(token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids)
+    assert output.shape == (1, 2, 32)
+
+
+def test_embedding_different_kinds_produce_different_output():
+    config = YamlBertConfig(d_model=32)
+    emb = YamlBertEmbedding(
+        config=config, key_vocab_size=10, value_vocab_size=10, kind_vocab_size=5,
+    )
+    token_ids = torch.tensor([[3]])
+    node_types = torch.tensor([[0]])
+    depths = torch.tensor([[1]])
+    siblings = torch.tensor([[0]])
+    parent_keys = torch.tensor([[4]])
+
+    out_a = emb(token_ids, node_types, depths, siblings, parent_keys, kind_ids=torch.tensor([[1]]))
+    out_b = emb(token_ids, node_types, depths, siblings, parent_keys, kind_ids=torch.tensor([[2]]))
+    assert not torch.allclose(out_a, out_b)
+
+
+def test_embedding_without_kind_backward_compatible():
+    config = YamlBertConfig(d_model=32)
+    emb = YamlBertEmbedding(config=config, key_vocab_size=10, value_vocab_size=10)
+
+    token_ids = torch.tensor([[3]])
+    node_types = torch.tensor([[0]])
+    depths = torch.tensor([[1]])
+    siblings = torch.tensor([[0]])
+    parent_keys = torch.tensor([[4]])
+
+    output = emb(token_ids, node_types, depths, siblings, parent_keys)
+    assert output.shape == (1, 1, 32)

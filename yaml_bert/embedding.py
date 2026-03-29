@@ -20,6 +20,7 @@ class YamlBertEmbedding(nn.Module):
         config: YamlBertConfig,
         key_vocab_size: int,
         value_vocab_size: int,
+        kind_vocab_size: int | None = None,
     ) -> None:
         super().__init__()
 
@@ -35,6 +36,10 @@ class YamlBertEmbedding(nn.Module):
         self.node_type_embedding: nn.Embedding = nn.Embedding(4, d)
         self.parent_key_embedding: nn.Embedding = nn.Embedding(key_vocab_size, d)
 
+        self.kind_embedding: nn.Embedding | None = None
+        if kind_vocab_size is not None:
+            self.kind_embedding = nn.Embedding(kind_vocab_size, d)
+
         self.layer_norm: nn.LayerNorm = nn.LayerNorm(d)
 
     def forward(
@@ -44,6 +49,7 @@ class YamlBertEmbedding(nn.Module):
         depths: torch.Tensor,
         sibling_indices: torch.Tensor,
         parent_key_ids: torch.Tensor,
+        kind_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # Route token embedding based on node_type
         # KEY=0, LIST_KEY=2 use key_embedding; VALUE=1, LIST_VALUE=3 use value_embedding
@@ -64,5 +70,8 @@ class YamlBertEmbedding(nn.Module):
             + self.node_type_embedding(node_types)
             + self.parent_key_embedding(parent_key_ids)
         )
+
+        if self.kind_embedding is not None and kind_ids is not None:
+            tree_pos = tree_pos + self.kind_embedding(kind_ids)
 
         return self.layer_norm(token_emb + tree_pos)
