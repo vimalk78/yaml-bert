@@ -1916,10 +1916,218 @@ spec:
     ])
 
     # ----------------------------------------------------------
-    # CAPABILITY 22 additions: data in Deployment (wrong),
-    # ports in ConfigMap (wrong), volumeClaimTemplates in Deployment (wrong)
+    # CAPABILITY 22 additions: extensive kind-specific invalid tests
     # ----------------------------------------------------------
     capabilities[21].tests.extend([
+        # Pod should NOT have these (they belong to controllers)
+        TestCase(
+            name="selector in Pod spec (WRONG — controller field)",
+            yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  selector:
+    matchLabels:
+      app: test
+  containers:
+  - name: app
+    image: nginx
+""",
+            mask_token="selector",
+            expect_not_top1=["selector"],
+        ),
+        TestCase(
+            name="strategy in Pod spec (WRONG — Deployment field)",
+            yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  strategy:
+    type: RollingUpdate
+  containers:
+  - name: app
+    image: nginx
+""",
+            mask_token="strategy",
+            expect_not_top1=["strategy"],
+        ),
+        TestCase(
+            name="jobTemplate in Pod spec (WRONG — CronJob field)",
+            yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: app
+            image: nginx
+  containers:
+  - name: app
+    image: nginx
+""",
+            mask_token="jobTemplate",
+            expect_not_top1=["jobTemplate"],
+        ),
+        # Service should NOT have these
+        TestCase(
+            name="containers in Service spec (WRONG)",
+            yaml_text="""\
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+spec:
+  containers:
+  - name: app
+    image: nginx
+  ports:
+  - port: 80
+""",
+            mask_token="containers",
+            expect_not_top1=["containers"],
+        ),
+        TestCase(
+            name="template in Service spec (WRONG)",
+            yaml_text="""\
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc
+spec:
+  template:
+    spec:
+      containers:
+      - name: app
+  ports:
+  - port: 80
+""",
+            mask_token="template",
+            expect_not_top1=["template"],
+        ),
+        # Job should NOT have these
+        TestCase(
+            name="replicas in Job spec (WRONG)",
+            yaml_text="""\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+      restartPolicy: Never
+""",
+            mask_token="replicas",
+            expect_not_top1=["replicas"],
+        ),
+        TestCase(
+            name="strategy in Job spec (WRONG — Deployment field)",
+            yaml_text="""\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: job
+spec:
+  strategy:
+    type: RollingUpdate
+  template:
+    spec:
+      containers:
+      - name: worker
+        image: busybox
+      restartPolicy: Never
+""",
+            mask_token="strategy",
+            expect_not_top1=["strategy"],
+        ),
+        # DaemonSet should NOT have replicas
+        TestCase(
+            name="replicas in DaemonSet spec (WRONG — DaemonSets run on all nodes)",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ds
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ds
+  template:
+    spec:
+      containers:
+      - name: agent
+        image: monitor
+""",
+            mask_token="replicas",
+            expect_not_top1=["replicas"],
+        ),
+        # Namespace should NOT have spec
+        TestCase(
+            name="spec in Namespace (WRONG — Namespaces have no spec)",
+            yaml_text="""\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test
+spec:
+  replicas: 1
+""",
+            mask_token="spec",
+            expect_not_top1=["spec"],
+        ),
+        # CronJob spec should NOT have these
+        TestCase(
+            name="replicas in CronJob spec (WRONG)",
+            yaml_text="""\
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cron
+spec:
+  replicas: 3
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: job
+            image: busybox
+""",
+            mask_token="replicas",
+            expect_not_top1=["replicas"],
+        ),
+        TestCase(
+            name="containers in CronJob spec (WRONG — needs jobTemplate.spec.template.spec.containers)",
+            yaml_text="""\
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cron
+spec:
+  schedule: "*/5 * * * *"
+  containers:
+  - name: job
+    image: busybox
+""",
+            mask_token="containers",
+            expect_not_top1=["containers"],
+        ),
+        # Original 3 additions below
         TestCase(
             name="data in Deployment (wrong - Deployment uses spec.template)",
             yaml_text="""\
