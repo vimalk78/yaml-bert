@@ -62,3 +62,36 @@ class YamlBertModel(nn.Module):
             key_logits.view(-1, key_logits.size(-1)),
             labels.view(-1),
         )
+
+    @torch.no_grad()
+    def get_attention_weights(
+        self,
+        token_ids: torch.Tensor,
+        node_types: torch.Tensor,
+        depths: torch.Tensor,
+        sibling_indices: torch.Tensor,
+        parent_key_ids: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """Extract attention weights from all layers.
+
+        Returns list of tensors, one per layer,
+        each of shape (batch_size, num_heads, seq_len, seq_len).
+        """
+        self.eval()
+        x: torch.Tensor = self.embedding(
+            token_ids, node_types, depths, sibling_indices, parent_key_ids
+        )
+
+        attention_weights: list[torch.Tensor] = []
+        for layer in self.encoder.layers:
+            # PyTorch TransformerEncoderLayer uses self_attn (MultiheadAttention)
+            # Call it directly with need_weights=True
+            attn_output, attn_weight = layer.self_attn(
+                x, x, x, need_weights=True, average_attn_weights=False
+            )
+            attention_weights.append(attn_weight)
+
+            # Run the rest of the layer to get input for next layer
+            x = layer(x)
+
+        return attention_weights
