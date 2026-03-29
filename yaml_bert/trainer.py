@@ -89,6 +89,7 @@ class YamlBertTrainer:
                     sibling_indices=batch["sibling_indices"],
                     parent_key_ids=batch["parent_key_ids"],
                     padding_mask=batch["padding_mask"],
+                    kind_ids=batch.get("kind_ids"),
                 )
 
                 loss: torch.Tensor = self.model.compute_loss(
