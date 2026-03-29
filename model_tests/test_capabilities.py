@@ -44,6 +44,7 @@ class Capability:
     name: str
     description: str
     tests: list[TestCase]
+    phase: str = "pretrain"  # "pretrain" or "finetune"
 
 
 @dataclass
@@ -435,6 +436,7 @@ metadata:
     capabilities.append(Capability(
         name="Invalid structure rejection",
         description="Model has low confidence when structure is wrong",
+        phase="finetune",
         tests=[
             TestCase(
                 name="containers under metadata (wrong)",
@@ -1370,6 +1372,7 @@ data:
     capabilities.append(Capability(
         name="Kind-specific invalid structure rejection",
         description="Model rejects keys that are wrong for the document's kind",
+        phase="finetune",
         tests=[
             TestCase(
                 name="replicas in Pod spec (WRONG)",
@@ -2813,22 +2816,47 @@ def main() -> None:
 
         pct: float = cap_passed / cap_total * 100 if cap_total > 0 else 0
         print(f"  Result: {cap_passed}/{cap_total} ({pct:.0f}%)\n")
-        cap_results.append((cap.name, cap_passed, cap_total))
+        cap_results.append((cap.name, cap.phase, cap_passed, cap_total))
 
     # Summary
     print(f"{'=' * 70}")
     print(f"CAPABILITY COVERAGE SUMMARY")
     print(f"{'=' * 70}")
-    caps_fully_passed: int = 0
-    for name, passed, total in cap_results:
+
+    # Pre-training capabilities
+    pretrain_caps = [(n, p, t) for n, ph, p, t in cap_results if ph == "pretrain"]
+    finetune_caps = [(n, p, t) for n, ph, p, t in cap_results if ph == "finetune"]
+
+    pretrain_fully_passed: int = 0
+    pretrain_total_passed: int = 0
+    pretrain_total_tests: int = 0
+    print("\n  Pre-training capabilities:")
+    for name, passed, total in pretrain_caps:
         pct = passed / total * 100 if total > 0 else 0
         status = "PASS" if passed == total else "PARTIAL" if passed > 0 else "FAIL"
-        print(f"  [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
+        print(f"    [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
         if passed == total:
-            caps_fully_passed += 1
+            pretrain_fully_passed += 1
+        pretrain_total_passed += passed
+        pretrain_total_tests += total
 
-    print(f"\nCapabilities: {caps_fully_passed}/{len(capabilities)} fully passing")
-    print(f"Test cases: {total_passed}/{total_tests} passing")
+    if finetune_caps:
+        finetune_fully_passed: int = 0
+        finetune_total_passed: int = 0
+        finetune_total_tests: int = 0
+        print("\n  Fine-tuning capabilities (requires fine-tuned model):")
+        for name, passed, total in finetune_caps:
+            pct = passed / total * 100 if total > 0 else 0
+            status = "PASS" if passed == total else "PARTIAL" if passed > 0 else "FAIL"
+            print(f"    [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
+            if passed == total:
+                finetune_fully_passed += 1
+            finetune_total_passed += passed
+            finetune_total_tests += total
+
+    print(f"\nPre-training: {pretrain_fully_passed}/{len(pretrain_caps)} capabilities, {pretrain_total_passed}/{pretrain_total_tests} tests")
+    if finetune_caps:
+        print(f"Fine-tuning:  {finetune_fully_passed}/{len(finetune_caps)} capabilities, {finetune_total_passed}/{finetune_total_tests} tests")
     print(f"{'=' * 70}")
 
 
