@@ -139,7 +139,7 @@ def main() -> None:
         model=model,
         dataset=dataset,
         checkpoint_dir=os.path.join(args.output_dir, "checkpoints"),
-        checkpoint_every=5,
+        checkpoint_every=1,
         resume_from=args.resume,
     )
 
