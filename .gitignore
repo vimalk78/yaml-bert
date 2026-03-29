@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Model artifacts (large binary files)
+*.pt
+token_counts.json
+output/
+output_hf/
