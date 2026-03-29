@@ -46,6 +46,10 @@ def parse_args() -> argparse.Namespace:
                         help="Output directory")
     parser.add_argument("--vocab-min-freq", type=int, default=2,
                         help="Min frequency for vocab tokens (default: 2)")
+    parser.add_argument("--alpha", type=float, default=None,
+                        help="Kind auxiliary loss weight (default: from config)")
+    parser.add_argument("--beta", type=float, default=None,
+                        help="Parent key auxiliary loss weight (default: from config)")
     return parser.parse_args()
 
 
@@ -65,6 +69,10 @@ def main() -> None:
         config.num_epochs = args.epochs
     if args.batch_size is not None:
         config.batch_size = args.batch_size
+    if args.alpha is not None:
+        config.aux_kind_weight = args.alpha
+    if args.beta is not None:
+        config.aux_parent_weight = args.beta
 
     # Use fewer epochs for small subsets, more for large
     if config.num_epochs == 30 and max_docs is not None:
@@ -128,11 +136,13 @@ def main() -> None:
         config=config,
         embedding=emb,
         key_vocab_size=vocab.key_vocab_size,
+        kind_vocab_size=vocab.kind_vocab_size,
     )
 
     # Step 4: Train
     print("\n" + "=" * 60)
     print("Step 4: Training")
+    print(f"Auxiliary weights: alpha={config.aux_kind_weight}, beta={config.aux_parent_weight}")
     print("=" * 60)
     trainer: YamlBertTrainer = YamlBertTrainer(
         config=config,

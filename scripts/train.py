@@ -84,11 +84,13 @@ def main() -> None:
         config=config,
         embedding=emb,
         key_vocab_size=vocab.key_vocab_size,
+        kind_vocab_size=vocab.kind_vocab_size,
     )
 
     # Step 4: Train
     print("\n" + "=" * 60)
     print("Step 4: Training")
+    print(f"Auxiliary weights: alpha={config.aux_kind_weight}, beta={config.aux_parent_weight}")
     print("=" * 60)
     trainer: YamlBertTrainer = YamlBertTrainer(
         config=config,
