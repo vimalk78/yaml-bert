@@ -1,0 +1,63 @@
+  50,000 / 276,520 processed...
+  100,000 / 276,520 processed...
+  150,000 / 276,520 processed...
+  200,000 / 276,520 processed...
+  250,000 / 276,520 processed...
+Total files: 276,520
+Parse errors: 0
+Multi-document files: 0
+Files with cross-references: 183,303 (66.3%)
+
+=== Top 30 Kinds ===
+  Deployment                                 61,479 (22.2%)
+  Service                                    41,805 (15.1%)
+  Pod                                        28,655 (10.4%)
+  ConfigMap                                  26,601 (9.6%)
+  ClusterRole                                13,107 (4.7%)
+  Namespace                                  10,128 (3.7%)
+  Secret                                      9,076 (3.3%)
+  PersistentVolumeClaim                       8,837 (3.2%)
+  ServiceAccount                              8,727 (3.2%)
+  CustomResourceDefinition                    8,227 (3.0%)
+  Job                                         7,000 (2.5%)
+  ClusterRoleBinding                          6,449 (2.3%)
+  DaemonSet                                   5,466 (2.0%)
+  Ingress                                     5,052 (1.8%)
+  CronJob                                     4,790 (1.7%)
+  RoleBinding                                 4,527 (1.6%)
+  StatefulSet                                 3,743 (1.4%)
+  PersistentVolume                            3,496 (1.3%)
+  Role                                        3,236 (1.2%)
+  StorageClass                                3,097 (1.1%)
+  ReplicationController                       2,979 (1.1%)
+  NetworkPolicy                               1,694 (0.6%)
+  HorizontalPodAutoscaler                     1,674 (0.6%)
+  ReplicaSet                                  1,053 (0.4%)
+  ResourceQuota                               1,049 (0.4%)
+  LimitRange                                    894 (0.3%)
+  PodDisruptionBudget                           607 (0.2%)
+  PodSecurityPolicy                             578 (0.2%)
+  ValidatingWebhookConfiguration                417 (0.2%)
+  Endpoints                                     324 (0.1%)
+
+=== Top 20 API Versions ===
+  v1                                        142,864 (51.7%)
+  apps/v1                                    71,804 (26.0%)
+  rbac.authorization.k8s.io/v1               27,452 (9.9%)
+  apiextensions.k8s.io/v1                     8,227 (3.0%)
+  batch/v1                                    7,531 (2.7%)
+  networking.k8s.io/v1                        6,814 (2.5%)
+  batch/v1beta1                               4,254 (1.5%)
+  storage.k8s.io/v1                           3,260 (1.2%)
+  policy/v1beta1                              1,060 (0.4%)
+  admissionregistration.k8s.io/v1               723 (0.3%)
+  autoscaling/v1                                691 (0.2%)
+  autoscaling/v2beta2                           533 (0.2%)
+  autoscaling/v2beta1                           454 (0.2%)
+  apiregistration.k8s.io/v1                     197 (0.1%)
+  scheduling.k8s.io/v1                          143 (0.1%)
+  policy/v1                                     129 (0.0%)
+  rbac.authorization.k8s.io/v1alpha1             89 (0.0%)
+  discovery.k8s.io/v1beta1                       67 (0.0%)
+  node.k8s.io/v1beta1                            45 (0.0%)
+  certificates.k8s.io/v1                         32 (0.0%)
