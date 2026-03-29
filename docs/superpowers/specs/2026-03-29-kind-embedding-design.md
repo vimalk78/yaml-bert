@@ -95,11 +95,107 @@ Documents with unknown or missing `kind` get `[UNK]` — the model treats them a
 
 ## Checkpoint Compatibility
 
-This is a breaking architecture change. The new model has an additional embedding table, so existing checkpoints cannot be loaded. Retraining is required.
+The `kind_embedding` is **optional**. Implementation uses `strict=False` when loading state dicts and defaults to `None` if not present:
 
-## Impact on Existing Tests
+- V1 checkpoints load into new code — `kind_embedding` weights are randomly initialized but unused (no `kind_ids` passed)
+- V2 checkpoints load fully — `kind_embedding` weights are loaded
+- Old calling code that doesn't pass `kind_ids` still works — kind embedding is skipped
+- Existing unit tests pass without changes
+- Model tests (`test_capabilities.py`, `test_structural.py`) work with both v1 and v2 checkpoints
 
-All capability tests should continue to pass (the model gets strictly more information). The anomaly detection should improve significantly for kind-specific errors.
+No breaking changes.
+
+## Design Decisions
+
+1. **Kind extracted during dataset creation** — keeps `YamlNode` unchanged. Kind is a document-level property, not a per-node property. The dataset extracts it from the raw node list (find the node where `token="kind"` and take the next VALUE node's token).
+
+2. **Documents without `kind` use `[UNK]`** — no new special token. Adding a new special token like `[NO_KIND]` would shift all vocab IDs and break v1 compatibility. `[UNK]` (ID=1) already exists and serves the purpose.
+
+## New Visualizations
+
+### Kind embedding table visualization
+- Plot the kind embedding vectors for all ~50 kinds using t-SNE/PCA to 2D
+- Similar kinds should cluster (Deployment/StatefulSet/DaemonSet are all workloads, Service/Ingress are networking, Role/ClusterRole are RBAC)
+- Compare with: are the clusters semantically meaningful?
+
+### Tree visualization with kind
+- Extend `visualize_tree.py` to show a `_kind.png` component view
+- All nodes same color (since kind is document-level, every node gets the same kind_emb)
+- More useful: show TWO trees side by side — same YAML structure but different `kind` values — showing how the full embedding changes
+
+### Kind effect heatmap
+- For each (kind, parent_key) combination, show the model's top-3 predicted keys
+- Visualize as a matrix: kinds on rows, parent keys on columns, predicted keys in cells
+- Shows how kind conditions structure predictions
+
+### Before/after comparison
+- Run the same anomaly examples on v1 (no kind_emb) and v2 (with kind_emb)
+- Side-by-side comparison of confidence scores
+- Proves that kind embedding fixes the detection failures
+
+## New Capability Tests
+
+### Capability: Kind-specific spec children (expand existing)
+
+Additional test cases beyond what's in the current suite:
+
+```
+- Pod spec has containers (not template)
+- Deployment spec has template (not containers directly)
+- StatefulSet spec has volumeClaimTemplates
+- DaemonSet spec has updateStrategy (not replicas)
+- Job spec has backoffLimit and template
+- CronJob spec has schedule and jobTemplate
+- Service spec has ports, selector, type (not containers)
+- ConfigMap has data (not spec)
+- Secret has data and type (not spec)
+- PVC spec has accessModes, resources
+- Namespace has no spec
+```
+
+### Capability: Kind-specific invalid structure rejection
+
+These are the anomaly cases that v1 fails. v2 should catch them:
+
+```
+- replicas in Pod spec → should flag (Pods don't have replicas)
+- replicas in Service spec → should flag
+- replicas in ConfigMap → should flag
+- containers directly under Deployment spec → should flag (needs template)
+- template in Pod spec → should flag (Pods have containers directly)
+- ports in Deployment spec → should flag (ports go in containers or Service)
+- selector in ConfigMap → should flag
+- data in Deployment → should flag
+- spec in ConfigMap → should flag (uses data, not spec)
+- spec in Secret → should flag (uses data, not spec)
+- schedule in Deployment → should flag (CronJob field)
+- serviceName in Deployment → should flag (StatefulSet field)
+```
+
+### Capability: Same structure, different kind
+
+Test that the model gives different predictions for identical tree positions when the `kind` differs:
+
+```
+- Mask first key under spec in Deployment → expect replicas/selector/template
+- Mask first key under spec in Service → expect type/ports/selector
+- Mask first key under spec in Pod → expect containers/volumes/nodeSelector
+- Mask first key under spec in Job → expect template/backoffLimit/completions
+```
+
+Same depth, same parent_key (spec), same sibling_index — only kind differs.
+
+### Capability: Kind embedding does not harm valid structures
+
+Verify that adding kind embedding doesn't reduce accuracy on valid YAMLs:
+
+```
+- Valid Deployment still predicts all keys correctly
+- Valid Service still predicts all keys correctly
+- Valid Pod still predicts all keys correctly
+- Valid ConfigMap still predicts all keys correctly
+- Valid StatefulSet still predicts all keys correctly
+```
 
 ## What This Does NOT Change
 
@@ -107,11 +203,3 @@ All capability tests should continue to pass (the model gets strictly more infor
 - No changes to the transformer encoder or attention mechanism
 - No changes to the tree bias (future enhancement)
 - Training data and vocabulary building process unchanged (except adding kind vocab)
-
-## Open Questions
-
-1. Should `kind` be extracted during linearization (added to `YamlNode`) or during dataset creation (extracted from the raw document)?
-   - Recommendation: during dataset creation — keeps `YamlNode` unchanged, kind is a document-level property not a per-node property.
-
-2. Should documents without `kind` (unlikely but possible) get a special token or `[UNK]`?
-   - Recommendation: `[UNK]` — treat as generic, model learns from context.
