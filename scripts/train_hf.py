@@ -4,7 +4,7 @@ Usage:
     python train_hf.py                          # 1000 docs, small model (quick test)
     python train_hf.py --max-docs 10000         # 10K docs
     python train_hf.py --max-docs 0 --full      # all 276K docs, full model config
-    python train_hf.py --resume output_hf/checkpoints/yaml_bert_epoch_10.pt
+    python train_hf.py --resume output_v1/checkpoints/yaml_bert_epoch_10.pt
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -27,7 +27,7 @@ from yaml_bert.vocab import VocabBuilder, Vocabulary
 
 DATASET_NAME: str = "substratusai/the-stack-yaml-k8s"
 _PROJECT_ROOT: str = os.path.join(os.path.dirname(__file__), "..")
-OUTPUT_DIR: str = os.path.join(_PROJECT_ROOT, "output_hf")
+OUTPUT_DIR: str = os.path.join(_PROJECT_ROOT, "output_v1")
 
 
 def parse_args() -> argparse.Namespace:

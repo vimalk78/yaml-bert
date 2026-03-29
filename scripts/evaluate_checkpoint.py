@@ -22,7 +22,7 @@ from yaml_bert.vocab import Vocabulary
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate YAML-BERT checkpoint")
     parser.add_argument("checkpoint", type=str, help="Path to checkpoint .pt file")
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     parser.add_argument("--data-dir", type=str, default=None,
                         help="Local YAML dir (if not using HF dataset)")
     parser.add_argument("--hf-dataset", type=str, default="substratusai/the-stack-yaml-k8s",

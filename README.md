@@ -85,32 +85,32 @@ python train_hf.py --max-docs 0 --full --epochs 30       # full training
 ### Evaluate a checkpoint
 
 ```bash
-python evaluate_checkpoint.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+python evaluate_checkpoint.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 ```
 
 ### Run capability tests
 
 ```bash
-python test_capabilities.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+python test_capabilities.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 ```
 
 ### Anomaly detection
 
 ```bash
-python anomaly_score.py output_hf/checkpoints/yaml_bert_epoch_10.pt --yaml-file my_manifest.yaml
-python anomaly_score.py output_hf/checkpoints/yaml_bert_epoch_10.pt --run-examples
+python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --yaml-file my_manifest.yaml
+python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --run-examples
 ```
 
 ### Visualize attention patterns
 
 ```bash
-python visualize_attention.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+python visualize_attention.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 ```
 
 ### Visualize tree embeddings
 
 ```bash
-python visualize_tree.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+python visualize_tree.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 ```
 
 ## Project Structure

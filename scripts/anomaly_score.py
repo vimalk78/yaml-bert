@@ -9,9 +9,9 @@ For each key node:
 - If the actual key has high probability → normal (expected at this position)
 
 Usage:
-    python anomaly_score.py output_hf/checkpoints/yaml_bert_epoch_10.pt --yaml-file my_manifest.yaml
-    python anomaly_score.py output_hf/checkpoints/yaml_bert_epoch_10.pt --yaml-text "..."
-    python anomaly_score.py output_hf/checkpoints/yaml_bert_epoch_10.pt --run-examples
+    python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --yaml-file my_manifest.yaml
+    python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --yaml-text "..."
+    python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --run-examples
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -360,7 +360,7 @@ spec:
 def main() -> None:
     parser = argparse.ArgumentParser(description="YAML-BERT Anomaly Scorer")
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     parser.add_argument("--yaml-file", type=str, default=None)
     parser.add_argument("--yaml-text", type=str, default=None)
     parser.add_argument("--threshold", type=float, default=0.01,

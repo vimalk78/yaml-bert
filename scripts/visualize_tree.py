@@ -5,9 +5,9 @@ Nodes with similar colors have similar positional encodings — the model sees t
 as structurally similar positions in the tree.
 
 Usage:
-    python visualize_tree.py output_hf/checkpoints/yaml_bert_epoch_10.pt
-    python visualize_tree.py output_hf/checkpoints/yaml_bert_epoch_10.pt --yaml-file data/k8s-yamls/deployment/deployment-nginx.yaml
-    python visualize_tree.py output_hf/checkpoints/yaml_bert_epoch_10.pt --doc-idx 73
+    python visualize_tree.py output_v1/checkpoints/yaml_bert_epoch_10.pt
+    python visualize_tree.py output_v1/checkpoints/yaml_bert_epoch_10.pt --yaml-file data/k8s-yamls/deployment/deployment-nginx.yaml
+    python visualize_tree.py output_v1/checkpoints/yaml_bert_epoch_10.pt --doc-idx 73
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -36,11 +36,11 @@ from yaml_bert.types import NodeType
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize tree positional encodings")
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     parser.add_argument("--yaml-file", type=str, default=None, help="Local YAML file")
     parser.add_argument("--doc-idx", type=int, default=None, help="HuggingFace dataset index")
     parser.add_argument("--max-nodes", type=int, default=40)
-    parser.add_argument("--output", type=str, default="output_hf/tree_viz/tree_embeddings.png")
+    parser.add_argument("--output", type=str, default="output_v1/tree_viz/tree_embeddings.png")
     parser.add_argument("--mode", type=str, default="tree_pos",
                         choices=["tree_pos", "full", "token_only"],
                         help="What to visualize: tree_pos (positional encoding only), "

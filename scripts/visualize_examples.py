@@ -1,7 +1,7 @@
 """Visualize attention patterns for interesting K8s resource types.
 
 Usage:
-    python visualize_examples.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+    python visualize_examples.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -186,8 +186,8 @@ def analyze_attention(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
-    parser.add_argument("--output-dir", type=str, default="output_hf/attention_examples")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
+    parser.add_argument("--output-dir", type=str, default="output_v1/attention_examples")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)

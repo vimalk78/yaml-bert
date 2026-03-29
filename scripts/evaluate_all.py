@@ -4,8 +4,8 @@ Combines: accuracy evaluation, structural tests, attention visualization,
 tree embedding visualization, and embedding analysis.
 
 Usage:
-    python evaluate_all.py output_hf/checkpoints/yaml_bert_epoch_10.pt
-    python evaluate_all.py output_hf/checkpoints/yaml_bert_epoch_15.pt --output-dir output_hf/eval_epoch15
+    python evaluate_all.py output_v1/checkpoints/yaml_bert_epoch_10.pt
+    python evaluate_all.py output_v1/checkpoints/yaml_bert_epoch_15.pt --output-dir output_v1/eval_epoch15
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -19,9 +19,9 @@ import time
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run all YAML-BERT evaluations")
     parser.add_argument("checkpoint", type=str, help="Path to checkpoint .pt file")
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     parser.add_argument("--output-dir", type=str, default=None,
-                        help="Output directory (default: output_hf/eval_epoch_N)")
+                        help="Output directory (default: output_v1/eval_epoch_N)")
     parser.add_argument("--max-eval-docs", type=int, default=500,
                         help="Max docs for accuracy evaluation")
     parser.add_argument("--skip-accuracy", action="store_true",
@@ -39,7 +39,7 @@ def main() -> None:
     epoch: int = checkpoint["epoch"]
 
     if args.output_dir is None:
-        args.output_dir = f"output_hf/eval_epoch_{epoch}"
+        args.output_dir = f"output_v1/eval_epoch_{epoch}"
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"{'=' * 70}")

@@ -3,7 +3,7 @@
 Tests whether the model learned real K8s structure vs just frequency patterns.
 
 Usage:
-    python test_structural.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+    python test_structural.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -22,7 +22,7 @@ from yaml_bert.types import NodeType
 import torch.nn.functional as F
 
 
-def load_model(checkpoint_path: str, vocab_path: str = "output_hf/vocab.json") -> tuple[YamlBertModel, Vocabulary]:
+def load_model(checkpoint_path: str, vocab_path: str = "output_v1/vocab.json") -> tuple[YamlBertModel, Vocabulary]:
     vocab: Vocabulary = Vocabulary.load(vocab_path)
     config: YamlBertConfig = YamlBertConfig()
     emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size)
@@ -119,7 +119,7 @@ def print_predictions(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     args = parser.parse_args()
 
     model, vocab = load_model(args.checkpoint, args.vocab)

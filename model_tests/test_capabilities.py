@@ -7,7 +7,7 @@ Each capability represents a structural concept the model should understand.
 Multiple test cases per capability. Track capability coverage.
 
 Usage:
-    python test_capabilities.py output_hf/checkpoints/yaml_bert_epoch_10.pt
+    python test_capabilities.py output_v1/checkpoints/yaml_bert_epoch_10.pt
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -1337,7 +1337,7 @@ def run_test(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 

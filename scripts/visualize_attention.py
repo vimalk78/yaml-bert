@@ -1,8 +1,8 @@
 """Visualize attention patterns from a trained YAML-BERT checkpoint.
 
 Usage:
-    python visualize_attention.py output_hf/checkpoints/yaml_bert_epoch_10.pt
-    python visualize_attention.py output_hf/checkpoints/yaml_bert_epoch_10.pt --doc-idx 5
+    python visualize_attention.py output_v1/checkpoints/yaml_bert_epoch_10.pt
+    python visualize_attention.py output_v1/checkpoints/yaml_bert_epoch_10.pt --doc-idx 5
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -26,11 +26,11 @@ from yaml_bert.types import NodeType
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Visualize YAML-BERT attention patterns")
     parser.add_argument("checkpoint", type=str, help="Path to checkpoint .pt file")
-    parser.add_argument("--vocab", type=str, default="output_hf/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
     parser.add_argument("--doc-idx", type=int, default=0, help="Document index to visualize")
     parser.add_argument("--max-nodes", type=int, default=30,
                         help="Max nodes to show (truncate long docs for readability)")
-    parser.add_argument("--output-dir", type=str, default="output_hf/attention")
+    parser.add_argument("--output-dir", type=str, default="output_v1/attention")
     parser.add_argument("--yaml-text", type=str, default=None,
                         help="Custom YAML text to visualize (instead of HF dataset)")
     return parser.parse_args()

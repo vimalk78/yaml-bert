@@ -6,4 +6,4 @@ __pycache__/
 *.pt
 token_counts.json
 output/
-output_hf/
+output_v1/
