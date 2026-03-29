@@ -45,9 +45,11 @@ class YamlBertModel(nn.Module):
         sibling_indices: torch.Tensor,
         parent_key_ids: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        kind_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         x: torch.Tensor = self.embedding(
-            token_ids, node_types, depths, sibling_indices, parent_key_ids
+            token_ids, node_types, depths, sibling_indices, parent_key_ids,
+            kind_ids=kind_ids,
         )
         x = self.encoder(x, src_key_padding_mask=padding_mask)
         key_logits: torch.Tensor = self.key_prediction_head(x)
@@ -71,6 +73,7 @@ class YamlBertModel(nn.Module):
         depths: torch.Tensor,
         sibling_indices: torch.Tensor,
         parent_key_ids: torch.Tensor,
+        kind_ids: torch.Tensor | None = None,
     ) -> list[torch.Tensor]:
         """Extract attention weights from all layers.
 
@@ -79,7 +82,8 @@ class YamlBertModel(nn.Module):
         """
         self.eval()
         x: torch.Tensor = self.embedding(
-            token_ids, node_types, depths, sibling_indices, parent_key_ids
+            token_ids, node_types, depths, sibling_indices, parent_key_ids,
+            kind_ids=kind_ids,
         )
 
         attention_weights: list[torch.Tensor] = []
