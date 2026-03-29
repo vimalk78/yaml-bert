@@ -13,10 +13,12 @@ class Vocabulary:
         key_vocab: dict[str, int],
         value_vocab: dict[str, int],
         special_tokens: dict[str, int],
+        kind_vocab: dict[str, int] | None = None,
     ) -> None:
         self.key_vocab = key_vocab
         self.value_vocab = value_vocab
         self.special_tokens = special_tokens
+        self.kind_vocab = kind_vocab or {"[NO_KIND]": 0}
         self._id_to_key = {v: k for k, v in key_vocab.items()}
         self._id_to_value = {v: k for k, v in value_vocab.items()}
         self._id_to_special = {v: k for k, v in special_tokens.items()}
@@ -26,6 +28,11 @@ class Vocabulary:
 
     def encode_value(self, token: str) -> int:
         return self.value_vocab.get(token, self.special_tokens["[UNK]"])
+
+    def encode_kind(self, kind: str) -> int:
+        if not kind:
+            return self.kind_vocab["[NO_KIND]"]
+        return self.kind_vocab.get(kind, self.kind_vocab["[NO_KIND]"])
 
     def decode_key(self, id: int) -> str:
         if id in self._id_to_special:
@@ -62,11 +69,16 @@ class Vocabulary:
     def value_vocab_size(self) -> int:
         return len(self.value_vocab) + len(self.special_tokens)
 
+    @property
+    def kind_vocab_size(self) -> int:
+        return len(self.kind_vocab)
+
     def save(self, path: str) -> None:
         data = {
             "key_vocab": self.key_vocab,
             "value_vocab": self.value_vocab,
             "special_tokens": self.special_tokens,
+            "kind_vocab": self.kind_vocab,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -79,6 +91,7 @@ class Vocabulary:
             key_vocab=data["key_vocab"],
             value_vocab=data["value_vocab"],
             special_tokens=data["special_tokens"],
+            kind_vocab=data.get("kind_vocab"),
         )
 
 
@@ -86,20 +99,27 @@ class VocabBuilder:
     def build(self, nodes: list[YamlNode], min_freq: int = 1) -> Vocabulary:
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
+        kind_set: set[str] = set()
 
+        prev_was_kind_key: bool = False
         for node in nodes:
             if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
                 key_counts[node.token] = key_counts.get(node.token, 0) + 1
+                prev_was_kind_key = (node.token == "kind" and node.depth == 0)
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
+                if prev_was_kind_key:
+                    kind_set.add(node.token)
+                prev_was_kind_key = False
 
-        return self.build_from_counts(key_counts, value_counts, min_freq)
+        return self.build_from_counts(key_counts, value_counts, min_freq, kind_set)
 
     @staticmethod
     def build_from_counts(
         key_counts: dict[str, int],
         value_counts: dict[str, int],
         min_freq: int = 1,
+        kind_set: set[str] | None = None,
     ) -> Vocabulary:
         """Build vocabulary from pre-computed token counts."""
         special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
@@ -119,7 +139,11 @@ class VocabBuilder:
             )
         }
 
-        return Vocabulary(key_vocab, value_vocab, special_tokens)
+        kind_vocab: dict[str, int] = {"[NO_KIND]": 0}
+        for i, kind in enumerate(sorted(kind_set or [])):
+            kind_vocab[kind] = i + 1
+
+        return Vocabulary(key_vocab, value_vocab, special_tokens, kind_vocab)
 
     @staticmethod
     def save_counts(
@@ -166,7 +190,7 @@ class VocabBuilder:
         # Reuse saved counts if available
         if counts_path and os.path.exists(counts_path):
             key_counts, value_counts = self.load_counts(counts_path)
-            return self.build_from_counts(key_counts, value_counts, min_freq)
+            return self.build_from_counts(key_counts, value_counts, min_freq, None)
 
         from datasets import load_dataset
         from yaml_bert.types import YamlNode
@@ -197,14 +221,20 @@ class VocabBuilder:
         # Compute counts
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
+        kind_set: set[str] = set()
+        prev_was_kind_key: bool = False
         for node in all_nodes:
             if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
                 key_counts[node.token] = key_counts.get(node.token, 0) + 1
+                prev_was_kind_key = (node.token == "kind" and node.depth == 0)
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
+                if prev_was_kind_key:
+                    kind_set.add(node.token)
+                prev_was_kind_key = False
 
         # Save counts for reuse
         if counts_path:
             self.save_counts(key_counts, value_counts, counts_path)
 
-        return self.build_from_counts(key_counts, value_counts, min_freq)
+        return self.build_from_counts(key_counts, value_counts, min_freq, kind_set)
