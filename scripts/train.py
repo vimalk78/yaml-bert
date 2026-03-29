@@ -16,8 +16,9 @@ from yaml_bert.visualize import plot_training_loss, plot_embedding_similarity, p
 from yaml_bert.vocab import VocabBuilder
 
 
-DATA_DIR: str = os.path.join(os.path.dirname(__file__), "data", "k8s-yamls")
-OUTPUT_DIR: str = os.path.join(os.path.dirname(__file__), "output")
+_PROJECT_ROOT: str = os.path.join(os.path.dirname(__file__), "..")
+DATA_DIR: str = os.path.join(_PROJECT_ROOT, "data", "k8s-yamls")
+OUTPUT_DIR: str = os.path.join(_PROJECT_ROOT, "output")
 
 
 def main() -> None:

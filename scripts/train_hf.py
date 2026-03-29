@@ -25,7 +25,8 @@ from yaml_bert.vocab import VocabBuilder, Vocabulary
 
 
 DATASET_NAME: str = "substratusai/the-stack-yaml-k8s"
-OUTPUT_DIR: str = os.path.join(os.path.dirname(__file__), "output_hf")
+_PROJECT_ROOT: str = os.path.join(os.path.dirname(__file__), "..")
+OUTPUT_DIR: str = os.path.join(_PROJECT_ROOT, "output_hf")
 
 
 def parse_args() -> argparse.Namespace:

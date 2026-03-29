@@ -254,6 +254,8 @@ def main() -> None:
     os.makedirs(tree_dir, exist_ok=True)
 
     # Import and run tree visualization
+    import sys, os
+    sys.path.insert(0, os.path.dirname(__file__))
     from visualize_tree import compute_embeddings, embeddings_to_colors, draw_tree
 
     deployment_yaml: str = """\
