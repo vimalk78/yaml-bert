@@ -126,6 +126,25 @@ class YamlDataset(Dataset):
         print(f"Loaded {len(instance.documents):,} documents ({skipped} skipped)")
         return instance
 
+    @classmethod
+    def from_cached_docs(
+        cls,
+        documents: list[list[YamlNode]],
+        vocab: Vocabulary,
+        config: YamlBertConfig | None = None,
+    ) -> "YamlDataset":
+        """Build dataset from pre-linearized cached documents. No parsing needed."""
+        config = config or YamlBertConfig()
+        instance: YamlDataset = cls.__new__(cls)
+        instance.vocab = vocab
+        instance.linearizer = None
+        instance.annotator = None
+        instance.mask_prob = config.mask_prob
+        instance.max_seq_len = config.max_seq_len
+        instance.documents = documents
+        instance.document_kinds = [_extract_kind(doc) for doc in documents]
+        return instance
+
     def __len__(self) -> int:
         return len(self.documents)
 

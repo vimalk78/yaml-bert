@@ -84,43 +84,68 @@ def main() -> None:
     linearizer: YamlLinearizer = YamlLinearizer()
     annotator: DomainAnnotator = DomainAnnotator()
 
-    # Step 1: Build or load vocabulary
+    # Step 0: Build or load cached linearized documents (one scan, reused by vocab + dataset)
+    from yaml_bert.cache import build_or_load_cache
+    cache_path: str = os.path.join(args.output_dir, "doc_cache.pkl")
+
+    print("=" * 60)
+    print("Step 0: Linearizing documents (cached + parallel)")
+    print("=" * 60)
+    cached_docs: list = build_or_load_cache(
+        DATASET_NAME,
+        cache_path=cache_path,
+        max_docs=max_docs,
+    )
+
+    # Step 1: Build vocabulary from cached documents
     vocab_path: str = os.path.join(args.output_dir, "vocab.json")
     counts_path: str = os.path.join(args.output_dir, "token_counts.json")
 
-    print("=" * 60)
+    print("\n" + "=" * 60)
     print("Step 1: Building vocabulary")
     print("=" * 60)
     builder: VocabBuilder = VocabBuilder()
-    vocab: Vocabulary = builder.build_from_huggingface(
-        DATASET_NAME,
-        linearizer=linearizer,
-        annotator=annotator,
-        max_docs=max_docs,
-        min_freq=args.vocab_min_freq,
-        counts_path=counts_path,
-    )
+
+    # Check if counts are cached
+    if os.path.exists(counts_path):
+        from yaml_bert.vocab import VocabBuilder as VB
+        key_counts, value_counts = VB.load_counts(counts_path)
+        vocab: Vocabulary = VB.build_from_counts(key_counts, value_counts, args.vocab_min_freq)
+    else:
+        # Build from cached documents
+        all_nodes = []
+        for doc in cached_docs:
+            all_nodes.extend(doc)
+        vocab = builder.build(all_nodes, min_freq=args.vocab_min_freq)
+        # Save counts for future reuse
+        key_counts_new: dict[str, int] = {}
+        value_counts_new: dict[str, int] = {}
+        from yaml_bert.types import NodeType
+        for node in all_nodes:
+            if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
+                key_counts_new[node.token] = key_counts_new.get(node.token, 0) + 1
+            elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
+                value_counts_new[node.token] = value_counts_new.get(node.token, 0) + 1
+        VocabBuilder.save_counts(key_counts_new, value_counts_new, counts_path)
+
     vocab.save(vocab_path)
 
     print(f"Key vocab: {len(vocab.key_vocab)} tokens")
     print(f"Value vocab: {len(vocab.value_vocab)} tokens")
     print(f"Kind vocab: {vocab.kind_vocab_size} kinds")
 
-    # Step 2: Load dataset
+    # Step 2: Build dataset from cached documents (no re-parsing)
     print("\n" + "=" * 60)
-    print("Step 2: Loading dataset")
+    print("Step 2: Building dataset from cache")
     print("=" * 60)
     start: float = time.time()
-    dataset: YamlDataset = YamlDataset.from_huggingface(
-        DATASET_NAME,
+    dataset: YamlDataset = YamlDataset.from_cached_docs(
+        documents=cached_docs,
         vocab=vocab,
-        linearizer=linearizer,
-        annotator=annotator,
         config=config,
-        max_docs=max_docs,
     )
     load_time: float = time.time() - start
-    print(f"Dataset: {len(dataset):,} documents (loaded in {load_time:.1f}s)")
+    print(f"Dataset: {len(dataset):,} documents (built in {load_time:.1f}s)")
 
     # Step 3: Build model
     print("\n" + "=" * 60)
