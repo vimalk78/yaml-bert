@@ -82,7 +82,7 @@ class YamlBertTrainer:
 
                 optimizer.zero_grad()
 
-                key_logits: torch.Tensor = self.model(
+                key_logits, kind_logits, parent_logits = self.model(
                     token_ids=batch["token_ids"],
                     node_types=batch["node_types"],
                     depths=batch["depths"],
@@ -93,7 +93,14 @@ class YamlBertTrainer:
                 )
 
                 loss: torch.Tensor = self.model.compute_loss(
-                    key_logits, batch["labels"]
+                    key_logits=key_logits,
+                    labels=batch["labels"],
+                    kind_logits=kind_logits,
+                    kind_labels=batch.get("kind_ids"),
+                    parent_logits=parent_logits,
+                    parent_labels=batch.get("parent_key_ids"),
+                    alpha=self.config.aux_kind_weight,
+                    beta=self.config.aux_parent_weight,
                 )
 
                 loss.backward()
