@@ -48,7 +48,7 @@ def test_dataset_item_keys():
 
     expected_keys = {
         "token_ids", "node_types", "depths",
-        "sibling_indices", "parent_key_ids", "labels",
+        "sibling_indices", "parent_key_ids", "labels", "kind_ids",
     }
     assert set(item.keys()) == expected_keys
 
@@ -113,3 +113,47 @@ def test_collate_fn_padding():
 
     assert batch["token_ids"][1, 2].item() == 0
     assert batch["labels"][1, 2].item() == -100
+
+
+def test_dataset_includes_kind_ids():
+    vocab = _build_vocab()
+    dataset = YamlDataset(
+        yaml_dir=TEMPLATES_DIR,
+        vocab=vocab,
+        linearizer=YamlLinearizer(),
+        annotator=DomainAnnotator(),
+    )
+    item = dataset[0]
+
+    assert "kind_ids" in item
+    kind_ids = item["kind_ids"]
+    assert kind_ids.shape == item["token_ids"].shape
+    # All kind_ids should be the same within a document
+    assert (kind_ids == kind_ids[0]).all()
+
+
+def test_collate_fn_pads_kind_ids():
+    item1 = {
+        "token_ids": torch.tensor([1, 2, 3], dtype=torch.long),
+        "node_types": torch.tensor([0, 1, 0], dtype=torch.long),
+        "depths": torch.tensor([0, 0, 1], dtype=torch.long),
+        "sibling_indices": torch.tensor([0, 0, 0], dtype=torch.long),
+        "parent_key_ids": torch.tensor([1, 1, 2], dtype=torch.long),
+        "labels": torch.tensor([-100, 5, -100], dtype=torch.long),
+        "kind_ids": torch.tensor([3, 3, 3], dtype=torch.long),
+    }
+    item2 = {
+        "token_ids": torch.tensor([4, 5], dtype=torch.long),
+        "node_types": torch.tensor([0, 1], dtype=torch.long),
+        "depths": torch.tensor([0, 0], dtype=torch.long),
+        "sibling_indices": torch.tensor([0, 0], dtype=torch.long),
+        "parent_key_ids": torch.tensor([1, 1], dtype=torch.long),
+        "labels": torch.tensor([6, -100], dtype=torch.long),
+        "kind_ids": torch.tensor([5, 5], dtype=torch.long),
+    }
+
+    batch = collate_fn([item1, item2])
+
+    assert "kind_ids" in batch
+    assert batch["kind_ids"].shape == (2, 3)
+    assert batch["kind_ids"][1, 2].item() == 0  # padded with 0

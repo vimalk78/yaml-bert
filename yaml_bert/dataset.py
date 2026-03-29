@@ -14,6 +14,18 @@ from yaml_bert.types import NodeType, YamlNode
 from yaml_bert.vocab import Vocabulary
 
 
+def _extract_kind(nodes: list[YamlNode]) -> str:
+    """Extract the kind value from a document's node list."""
+    for i, node in enumerate(nodes):
+        if (node.token == "kind"
+            and node.depth == 0
+            and node.node_type == NodeType.KEY
+            and i + 1 < len(nodes)
+            and nodes[i + 1].node_type == NodeType.VALUE):
+            return nodes[i + 1].token
+    return ""
+
+
 # NodeType to integer index mapping
 _NODE_TYPE_INDEX: dict[NodeType, int] = {
     NodeType.KEY: 0,
@@ -49,11 +61,13 @@ class YamlDataset(Dataset):
             glob.glob(os.path.join(yaml_dir, "**", "*.yaml"), recursive=True)
         )
         self.documents: list[list[YamlNode]] = []
+        self.document_kinds: list[str] = []
         for path in yaml_files:
             nodes: list[YamlNode] = linearizer.linearize_file(path)
             if nodes:
                 annotator.annotate(nodes)
                 self.documents.append(nodes)
+                self.document_kinds.append(_extract_kind(nodes))
 
     @classmethod
     def from_huggingface(
@@ -85,6 +99,7 @@ class YamlDataset(Dataset):
         instance.mask_prob = config.mask_prob
         instance.max_seq_len = config.max_seq_len
         instance.documents = []
+        instance.document_kinds = []
 
         print(f"Loading dataset: {dataset_name}")
         ds = load_dataset(dataset_name, split="train")
@@ -103,6 +118,7 @@ class YamlDataset(Dataset):
             if nodes:
                 annotator.annotate(nodes)
                 instance.documents.append(nodes)
+                instance.document_kinds.append(_extract_kind(nodes))
 
             if (i + 1) % 10000 == 0:
                 print(f"  {i + 1:,} / {total:,} processed ({skipped} skipped)")
@@ -169,6 +185,10 @@ class YamlDataset(Dataset):
                 token_ids[i] = random_key_id
             # else 10%: keep unchanged
 
+        kind: str = self.document_kinds[idx]
+        kind_id: int = self.vocab.encode_kind(kind)
+        kind_ids: list[int] = [kind_id] * seq_len
+
         return {
             "token_ids": torch.tensor(token_ids, dtype=torch.long),
             "node_types": torch.tensor(node_types, dtype=torch.long),
@@ -176,6 +196,7 @@ class YamlDataset(Dataset):
             "sibling_indices": torch.tensor(sibling_indices, dtype=torch.long),
             "parent_key_ids": torch.tensor(parent_key_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
+            "kind_ids": torch.tensor(kind_ids, dtype=torch.long),
         }
 
 
