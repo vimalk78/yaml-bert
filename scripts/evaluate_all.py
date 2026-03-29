@@ -8,6 +8,7 @@ Usage:
     python evaluate_all.py output_hf/checkpoints/yaml_bert_epoch_15.pt --output-dir output_hf/eval_epoch15
 """
 from __future__ import annotations
+import _setup_path  # noqa: F401
 
 import argparse
 import os

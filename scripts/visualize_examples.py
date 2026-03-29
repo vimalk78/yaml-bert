@@ -4,6 +4,7 @@ Usage:
     python visualize_examples.py output_hf/checkpoints/yaml_bert_epoch_10.pt
 """
 from __future__ import annotations
+import _setup_path  # noqa: F401
 
 import argparse
 import os

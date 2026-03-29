@@ -1,5 +1,6 @@
 """Evaluate a saved YAML-BERT checkpoint without interrupting training."""
 from __future__ import annotations
+import _setup_path  # noqa: F401
 
 import argparse
 import glob

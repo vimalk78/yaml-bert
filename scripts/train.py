@@ -1,5 +1,6 @@
 """Dry run: train YAML-BERT on local K8s YAML corpus and evaluate."""
 from __future__ import annotations
+import _setup_path  # noqa: F401
 
 import glob
 import os
