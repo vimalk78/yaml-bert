@@ -1667,6 +1667,802 @@ spec:
         ],
     ))
 
+    # ----------------------------------------------------------
+    # CAPABILITY 1 additions: env var children, label children,
+    # volume children
+    # ----------------------------------------------------------
+    capabilities[0].tests.extend([
+        TestCase(
+            name="env var children (name, value)",
+            yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: nginx
+    env:
+    - name: DB_HOST
+      value: localhost
+    - name: DB_PORT
+      valueFrom:
+        configMapKeyRef:
+          name: db-config
+          key: port
+""",
+            mask_token="valueFrom",
+            expect_in_top5=["valueFrom", "value", "name"],
+        ),
+        TestCase(
+            name="label children (arbitrary label keys under labels)",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  labels:
+    app: web
+    version: v1
+    component: frontend
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+""",
+            mask_token="version",
+            expect_in_top5=["version", "app", "component"],
+        ),
+        TestCase(
+            name="volume children (name and volume type)",
+            yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  volumes:
+  - name: config-vol
+    configMap:
+      name: my-config
+  - name: secret-vol
+    secret:
+      secretName: my-secret
+  containers:
+  - name: app
+    image: nginx
+""",
+            mask_token="secret",
+            expect_in_top5=["secret", "configMap", "emptyDir", "name", "persistentVolumeClaim"],
+        ),
+    ])
+
+    # ----------------------------------------------------------
+    # CAPABILITY 2 additions: StatefulSet serviceName,
+    # DaemonSet updateStrategy, Namespace (no spec)
+    # ----------------------------------------------------------
+    capabilities[1].tests.extend([
+        TestCase(
+            name="StatefulSet spec has serviceName",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7
+""",
+            mask_token="serviceName",
+            expect_in_top5=["serviceName", "replicas", "selector", "template"],
+        ),
+        TestCase(
+            name="DaemonSet spec has updateStrategy",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: fluentd
+  template:
+    metadata:
+      labels:
+        app: fluentd
+    spec:
+      containers:
+      - name: fluentd
+        image: fluentd:v1
+""",
+            mask_token="updateStrategy",
+            expect_in_top5=["updateStrategy", "selector", "template"],
+        ),
+        TestCase(
+            name="Namespace has metadata but no spec",
+            yaml_text="""\
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    env: prod
+""",
+            mask_token="name",
+            expect_in_top5=["name", "labels", "annotations", "namespace"],
+            expect_not_top1=["spec"],
+        ),
+    ])
+
+    # ----------------------------------------------------------
+    # CAPABILITY 6 additions: ports under metadata (wrong),
+    # selector under containers (wrong)
+    # ----------------------------------------------------------
+    capabilities[5].tests.extend([
+        TestCase(
+            name="ports under metadata (wrong)",
+            yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+  ports:
+  - containerPort: 80
+spec:
+  containers:
+  - name: app
+    image: nginx
+""",
+            mask_token="ports",
+            expect_not_top1=["ports"],
+        ),
+        TestCase(
+            name="selector under containers list (wrong)",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        selector:
+          app: web
+""",
+            mask_token="selector",
+            expect_not_top1=["selector"],
+        ),
+    ])
+
+    # ----------------------------------------------------------
+    # CAPABILITY 7 additions: PodDisruptionBudget, StorageClass,
+    # ResourceQuota
+    # ----------------------------------------------------------
+    capabilities[6].tests.extend([
+        TestCase(
+            name="PodDisruptionBudget has minAvailable",
+            yaml_text="""\
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pdb
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web
+""",
+            mask_token="minAvailable",
+            expect_in_top5=["minAvailable", "maxUnavailable", "selector"],
+        ),
+        TestCase(
+            name="StorageClass has provisioner",
+            yaml_text="""\
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+provisioner: kubernetes.io/aws-ebs
+parameters:
+  type: gp2
+reclaimPolicy: Retain
+""",
+            mask_token="provisioner",
+            expect_in_top5=["provisioner", "parameters", "reclaimPolicy"],
+        ),
+        TestCase(
+            name="ResourceQuota has hard",
+            yaml_text="""\
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: quota
+  namespace: default
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+""",
+            mask_token="hard",
+            expect_in_top5=["hard"],
+        ),
+    ])
+
+    # ----------------------------------------------------------
+    # CAPABILITY 22 additions: data in Deployment (wrong),
+    # ports in ConfigMap (wrong), volumeClaimTemplates in Deployment (wrong)
+    # ----------------------------------------------------------
+    capabilities[21].tests.extend([
+        TestCase(
+            name="data in Deployment (wrong - Deployment uses spec.template)",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+data:
+  key: value
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+""",
+            mask_token="data",
+            expect_not_top1=["data"],
+        ),
+        TestCase(
+            name="ports in ConfigMap (wrong)",
+            yaml_text="""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+ports:
+- containerPort: 80
+data:
+  key: value
+""",
+            mask_token="ports",
+            expect_not_top1=["ports"],
+        ),
+        TestCase(
+            name="volumeClaimTemplates in Deployment (wrong - StatefulSet field)",
+            yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 1
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+""",
+            mask_token="volumeClaimTemplates",
+            expect_not_top1=["volumeClaimTemplates"],
+        ),
+    ])
+
+    # ==========================================================
+    # CAPABILITY 25: Workload controller distinction
+    # Deployment, StatefulSet, DaemonSet, Job have distinct spec structures.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Workload controller distinction",
+        description="Deployment, StatefulSet, DaemonSet, Job have distinct spec fields",
+        tests=[
+            TestCase(
+                name="Deployment spec: replicas, selector, template, strategy",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web
+        image: nginx
+""",
+                mask_token="strategy",
+                expect_in_top5=["strategy", "replicas", "selector", "template"],
+            ),
+            TestCase(
+                name="StatefulSet spec: serviceName, replicas, volumeClaimTemplates",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+spec:
+  serviceName: db
+  replicas: 3
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 5Gi
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres
+""",
+                mask_token="volumeClaimTemplates",
+                expect_in_top5=["volumeClaimTemplates", "serviceName", "template"],
+            ),
+            TestCase(
+                name="DaemonSet spec: updateStrategy, selector, template (NOT replicas)",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-collector
+spec:
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app: log-collector
+  template:
+    metadata:
+      labels:
+        app: log-collector
+    spec:
+      containers:
+      - name: agent
+        image: log-agent:1.0
+""",
+                mask_token="updateStrategy",
+                expect_in_top5=["updateStrategy", "selector", "template"],
+                expect_not_top1=["replicas"],
+            ),
+            TestCase(
+                name="Job spec: template, backoffLimit, completions (NOT replicas)",
+                yaml_text="""\
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-process
+spec:
+  completions: 5
+  parallelism: 2
+  backoffLimit: 3
+  template:
+    spec:
+      containers:
+      - name: processor
+        image: processor:latest
+      restartPolicy: Never
+""",
+                mask_token="completions",
+                expect_in_top5=["completions", "parallelism", "backoffLimit", "template"],
+                expect_not_top1=["replicas"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 26: ConfigMap vs Secret
+    # Both have data at root level but different associated fields.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="ConfigMap vs Secret",
+        description="ConfigMap and Secret share data but have different associated fields",
+        tests=[
+            TestCase(
+                name="ConfigMap has binaryData",
+                yaml_text="""\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+data:
+  app.properties: |
+    host=localhost
+    port=8080
+binaryData:
+  logo.png: iVBORw0KGgo=
+""",
+                mask_token="binaryData",
+                expect_in_top5=["binaryData", "data"],
+            ),
+            TestCase(
+                name="Secret has stringData",
+                yaml_text="""\
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+data:
+  password: cGFzc3dvcmQ=
+stringData:
+  api-key: my-plaintext-key
+""",
+                mask_token="stringData",
+                expect_in_top5=["stringData", "data", "type"],
+            ),
+            TestCase(
+                name="Secret has type field at root",
+                yaml_text="""\
+apiVersion: v1
+kind: Secret
+metadata:
+  name: tls-secret
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTi==
+  tls.key: LS0tLS1CRUdJTi==
+""",
+                mask_token="type",
+                expect_in_top5=["type", "data", "stringData"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 27: Container field ordering
+    # Common container fields should be predicted correctly.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Container field completeness",
+        description="Model predicts all common container fields correctly",
+        tests=[
+            TestCase(
+                name="Container args field",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: app:latest
+    command: ["/bin/sh"]
+    args:
+    - "-c"
+    - "echo hello && sleep 3600"
+""",
+                mask_token="args",
+                expect_in_top5=["args", "command", "env", "ports", "name"],
+            ),
+            TestCase(
+                name="Container resources field",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+""",
+                mask_token="resources",
+                expect_in_top5=["resources", "ports", "image", "name", "env"],
+            ),
+            TestCase(
+                name="Container securityContext field",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  containers:
+  - name: app
+    image: nginx
+    securityContext:
+      runAsNonRoot: true
+      readOnlyRootFilesystem: true
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 8080
+""",
+                mask_token="securityContext",
+                expect_in_top5=["securityContext", "livenessProbe", "readinessProbe", "image"],
+            ),
+            TestCase(
+                name="Container volumeMounts field",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+spec:
+  volumes:
+  - name: data
+    emptyDir: {}
+  containers:
+  - name: app
+    image: nginx
+    volumeMounts:
+    - name: data
+      mountPath: /var/data
+    env:
+    - name: ENV
+      value: prod
+""",
+                mask_token="volumeMounts",
+                expect_in_top5=["volumeMounts", "env", "image", "name"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 28: Ingress structure
+    # Ingress has specific nested structure.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Ingress structure",
+        description="Model understands Ingress-specific nested structure",
+        tests=[
+            TestCase(
+                name="Ingress spec.rules[].host",
+                yaml_text="""\
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+spec:
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: web-svc
+            port:
+              number: 80
+""",
+                mask_token="host",
+                expect_in_top5=["host", "http"],
+            ),
+            TestCase(
+                name="Ingress spec.rules[].http.paths[].path",
+                yaml_text="""\
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web-ingress
+spec:
+  rules:
+  - host: app.example.com
+    http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: api-svc
+            port:
+              number: 8080
+""",
+                mask_token="path",
+                expect_in_top5=["path", "pathType", "backend"],
+            ),
+            TestCase(
+                name="Ingress backend service name",
+                yaml_text="""\
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress
+spec:
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 80
+  tls:
+  - hosts:
+    - example.com
+    secretName: tls-cert
+""",
+                mask_token="tls",
+                expect_in_top5=["tls", "rules", "ingressClassName"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 29: PV and PVC structure
+    # PersistentVolume and PersistentVolumeClaim have distinct fields.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="PV and PVC structure",
+        description="Model understands PersistentVolume and PersistentVolumeClaim fields",
+        tests=[
+            TestCase(
+                name="PV has capacity and accessModes",
+                yaml_text="""\
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-data
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /mnt/data
+""",
+                mask_token="capacity",
+                expect_in_top5=["capacity", "accessModes", "persistentVolumeReclaimPolicy"],
+            ),
+            TestCase(
+                name="PV has persistentVolumeReclaimPolicy",
+                yaml_text="""\
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-nfs
+spec:
+  capacity:
+    storage: 100Gi
+  accessModes:
+  - ReadWriteMany
+  persistentVolumeReclaimPolicy: Recycle
+  nfs:
+    path: /exports
+    server: nfs-server.example.com
+""",
+                mask_token="persistentVolumeReclaimPolicy",
+                expect_in_top5=["persistentVolumeReclaimPolicy", "capacity", "accessModes", "nfs"],
+            ),
+            TestCase(
+                name="PVC has resources.requests.storage",
+                yaml_text="""\
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: fast
+  resources:
+    requests:
+      storage: 20Gi
+""",
+                mask_token="storageClassName",
+                expect_in_top5=["storageClassName", "accessModes", "resources"],
+            ),
+        ],
+    ))
+
+    # ==========================================================
+    # CAPABILITY 30: Label and annotation structure
+    # Labels and annotations appear under metadata in most resources.
+    # ==========================================================
+    capabilities.append(Capability(
+        name="Label and annotation structure",
+        description="Labels and annotations appear under metadata, labels have common keys",
+        tests=[
+            TestCase(
+                name="labels is a sibling of annotations",
+                yaml_text="""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  labels:
+    app: web
+    version: v2
+  annotations:
+    deployment.kubernetes.io/revision: "3"
+    description: "production web app"
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+""",
+                mask_token="annotations",
+                expect_in_top5=["annotations", "labels", "name", "namespace"],
+            ),
+            TestCase(
+                name="Common label keys: app, version, component",
+                yaml_text="""\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+  labels:
+    app: frontend
+    version: v1
+    component: web
+spec:
+  containers:
+  - name: app
+    image: nginx
+""",
+                mask_token="component",
+                expect_in_top5=["component", "app", "version"],
+            ),
+        ],
+    ))
+
     return capabilities
 
 
