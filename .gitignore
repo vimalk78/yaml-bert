@@ -5,5 +5,4 @@ __pycache__/
 # Model artifacts (large binary files)
 *.pt
 token_counts.json
-output/
-output_v1/
+output*/

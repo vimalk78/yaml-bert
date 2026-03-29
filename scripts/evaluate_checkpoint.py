@@ -80,7 +80,7 @@ def main() -> None:
     )
 
     checkpoint: dict = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     model.to(args.device)
     print(f"Loaded checkpoint: epoch {checkpoint['epoch']}")
 

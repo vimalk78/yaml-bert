@@ -57,7 +57,7 @@ def main() -> None:
         key_vocab_size=vocab.key_vocab_size,
     )
     checkpoint: dict = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     print(f"Loaded checkpoint: epoch {checkpoint['epoch']}")
 
     linearizer: YamlLinearizer = YamlLinearizer()

@@ -65,7 +65,7 @@ def main() -> None:
 
     emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
     model = YamlBertModel(config=config, embedding=emb, key_vocab_size=vocab.key_vocab_size)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
     model.eval()
 
     linearizer: YamlLinearizer = YamlLinearizer()
