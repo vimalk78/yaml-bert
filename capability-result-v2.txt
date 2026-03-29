@@ -1,0 +1,243 @@
+YAML-BERT Capability Tests — Epoch 5
+======================================================================
+
+CAPABILITY: Parent-child validity
+  Model predicts keys that are valid children of the parent node
+  [PASS] spec children in Deployment
+  [PASS] metadata children
+  [PASS] container children
+  [PASS] resources children
+  [PASS] Service spec children
+  Result: 5/5 (100%)
+
+CAPABILITY: Kind conditioning
+  The kind value influences what keys appear under spec
+  [PASS] Deployment spec has replicas
+  [PASS] Service spec has type
+  [PASS] ConfigMap has data
+  [PASS] CronJob spec has schedule
+  [PASS] ClusterRole has rules
+  Result: 5/5 (100%)
+
+CAPABILITY: Depth sensitivity
+  Model predictions change appropriately with depth
+  [PASS] Depth 0: top-level keys only
+  [PASS] Depth 1 under metadata: metadata children
+  [PASS] Deep nesting: port fields
+  Result: 3/3 (100%)
+
+CAPABILITY: Sibling awareness
+  Model predicts keys that are valid siblings of existing keys
+  [PASS] requests siblings with limits
+  [PASS] readinessProbe siblings with livenessProbe
+  [PASS] matchLabels under selector
+  Result: 3/3 (100%)
+
+CAPABILITY: Required fields
+  Model predicts mandatory keys with high confidence
+  [PASS] apiVersion is required at root
+  [PASS] metadata is required
+  [PASS] name is required under metadata
+  Result: 3/3 (100%)
+
+CAPABILITY: Invalid structure rejection
+  Model has low confidence when structure is wrong
+  [PASS] containers under metadata (wrong)
+  [PASS] replicas under metadata (wrong)
+  [FAIL] apiVersion nested deep (wrong)
+         FAIL: 'apiVersion' is top prediction (should not be)
+           1. 'apiVersion' (100.00%)
+           2. 'fieldPath' (0.00%)
+           3. 'ref' (0.00%)
+           4. '[UNK]' (0.00%)
+           5. 'memory' (0.00%)
+  [FAIL] Nonsense structure low confidence
+         FAIL: confidence 86.74% > 60%
+           1. 'labels' (86.74%)
+           2. 'annotations' (8.02%)
+           3. 'finalizers' (1.73%)
+           4. 'rollingUpdate' (0.31%)
+           5. 'ownerReferences' (0.22%)
+  Result: 2/4 (50%)
+
+CAPABILITY: Cross-kind discrimination
+  Different resource types produce structurally appropriate predictions
+  [PASS] Secret has type field
+  [PASS] PVC has accessModes
+  [PASS] Ingress has rules
+  [PASS] NetworkPolicy has podSelector
+  Result: 4/4 (100%)
+
+CAPABILITY: Value-context sensitivity
+  Unmasked values influence key predictions (values serve as context)
+  [PASS] ports context: containerPort vs port
+  [PASS] env var structure: name and value
+  [PASS] volume mount has mountPath
+  Result: 3/3 (100%)
+
+CAPABILITY: Multi-container awareness
+  Model understands list item structure repeats
+  [PASS] Second container has same fields as first
+  [PASS] initContainers have container fields
+  Result: 2/2 (100%)
+
+CAPABILITY: RBAC structure
+  Model understands RBAC-specific key patterns
+  [PASS] Role rules have apiGroups
+  [PASS] RoleBinding has roleRef and subjects
+  Result: 2/2 (100%)
+
+CAPABILITY: Volume semantics
+  Model understands volume types and mount structure
+  [PASS] volumes under pod spec
+  [PASS] emptyDir is a volume type
+  [PASS] configMap volume type
+  Result: 3/3 (100%)
+
+CAPABILITY: StatefulSet structure
+  Model understands StatefulSet-specific patterns
+  [PASS] StatefulSet has serviceName
+  [PASS] StatefulSet has volumeClaimTemplates
+  Result: 2/2 (100%)
+
+CAPABILITY: DaemonSet structure
+  Model distinguishes DaemonSet from Deployment
+  [PASS] DaemonSet has updateStrategy
+  Result: 1/1 (100%)
+
+CAPABILITY: Job structure
+  Model understands Job-specific patterns
+  [PASS] Job has backoffLimit
+  [PASS] restartPolicy in Job pod
+  Result: 2/2 (100%)
+
+CAPABILITY: Probe structure
+  Model understands probe configuration patterns
+  [PASS] httpGet probe fields
+  [PASS] probe timing fields
+  Result: 2/2 (100%)
+
+CAPABILITY: Security context
+  Model understands security configuration patterns
+  [PASS] pod securityContext fields
+  [PASS] container securityContext
+  Result: 2/2 (100%)
+
+CAPABILITY: Service port structure
+  Model understands Service port and type patterns
+  [PASS] Service port has targetPort
+  [PASS] NodePort service has nodePort
+  Result: 2/2 (100%)
+
+CAPABILITY: Scheduling and affinity
+  Model understands scheduling constraint patterns
+  [PASS] tolerations structure
+  [PASS] toleration fields
+  Result: 2/2 (100%)
+
+CAPABILITY: HPA structure
+  Model understands HPA-specific patterns
+  [PASS] HPA has scaleTargetRef
+  [PASS] HPA has minReplicas and maxReplicas
+  Result: 2/2 (100%)
+
+CAPABILITY: Annotation patterns
+  Model understands common annotation structures
+  [PASS] annotations under metadata
+  [PASS] labels under metadata
+  Result: 2/2 (100%)
+
+CAPABILITY: Kind-specific spec children
+  Different resource kinds have different valid keys under spec
+  [PASS] Pod spec has containers directly
+  [PASS] Deployment spec has template not containers
+  [PASS] DaemonSet spec does not have replicas
+  [PASS] CronJob spec has schedule
+  [PASS] ConfigMap has data not spec
+  [PASS] Secret has data not spec
+  Result: 6/6 (100%)
+
+CAPABILITY: Kind-specific invalid structure rejection
+  Model rejects keys that are wrong for the document's kind
+  [FAIL] replicas in Pod spec (WRONG)
+         FAIL: 'replicas' is top prediction (should not be)
+           1. 'replicas' (93.93%)
+           2. 'terminationGracePeriodSeconds' (4.53%)
+           3. 'imagePullPolicy' (0.22%)
+           4. '[UNK]' (0.20%)
+           5. 'serviceAccountName' (0.18%)
+  [FAIL] containers directly in Deployment spec (WRONG)
+         FAIL: 'containers' is top prediction (should not be)
+           1. 'containers' (99.50%)
+           2. 'template' (0.35%)
+           3. 'volumes' (0.09%)
+           4. 'securityContext' (0.01%)
+           5. 'tolerations' (0.01%)
+  [PASS] template in Pod spec (WRONG)
+  [PASS] spec in ConfigMap (WRONG)
+  [PASS] spec in Secret (WRONG)
+  [PASS] schedule in Deployment (WRONG — CronJob field)
+  [FAIL] serviceName in Deployment (WRONG — StatefulSet field)
+         FAIL: 'serviceName' is top prediction (should not be)
+           1. 'serviceName' (96.35%)
+           2. 'config' (0.58%)
+           3. 'jobgroup' (0.19%)
+           4. 'concurrencyPolicy' (0.17%)
+           5. 'POSTGRES_DB' (0.13%)
+  [FAIL] replicas in Service spec (WRONG)
+         FAIL: 'replicas' is top prediction (should not be)
+           1. 'replicas' (99.92%)
+           2. 'selector' (0.01%)
+           3. 'ipFamilyPolicy' (0.01%)
+           4. 'loadBalancerIP' (0.01%)
+           5. 'group' (0.01%)
+  Result: 4/8 (50%)
+
+CAPABILITY: Same structure different kind
+  Identical tree position yields different predictions based on kind
+  [PASS] First key under Deployment spec
+  [PASS] First key under Service spec
+  [PASS] First key under Pod spec
+  [PASS] First key under Job spec
+  Result: 4/4 (100%)
+
+CAPABILITY: Kind embedding preserves valid structures
+  Adding kind embedding does not reduce accuracy on valid YAMLs
+  [PASS] Valid Deployment keys correct
+  [PASS] Valid Service keys correct
+  [PASS] Valid Pod keys correct
+  [PASS] Valid ConfigMap keys correct
+  [PASS] Valid StatefulSet keys correct
+  Result: 5/5 (100%)
+
+======================================================================
+CAPABILITY COVERAGE SUMMARY
+======================================================================
+  [   PASS] Parent-child validity: 5/5 (100%)
+  [   PASS] Kind conditioning: 5/5 (100%)
+  [   PASS] Depth sensitivity: 3/3 (100%)
+  [   PASS] Sibling awareness: 3/3 (100%)
+  [   PASS] Required fields: 3/3 (100%)
+  [PARTIAL] Invalid structure rejection: 2/4 (50%)
+  [   PASS] Cross-kind discrimination: 4/4 (100%)
+  [   PASS] Value-context sensitivity: 3/3 (100%)
+  [   PASS] Multi-container awareness: 2/2 (100%)
+  [   PASS] RBAC structure: 2/2 (100%)
+  [   PASS] Volume semantics: 3/3 (100%)
+  [   PASS] StatefulSet structure: 2/2 (100%)
+  [   PASS] DaemonSet structure: 1/1 (100%)
+  [   PASS] Job structure: 2/2 (100%)
+  [   PASS] Probe structure: 2/2 (100%)
+  [   PASS] Security context: 2/2 (100%)
+  [   PASS] Service port structure: 2/2 (100%)
+  [   PASS] Scheduling and affinity: 2/2 (100%)
+  [   PASS] HPA structure: 2/2 (100%)
+  [   PASS] Annotation patterns: 2/2 (100%)
+  [   PASS] Kind-specific spec children: 6/6 (100%)
+  [PARTIAL] Kind-specific invalid structure rejection: 4/8 (50%)
+  [   PASS] Same structure different kind: 4/4 (100%)
+  [   PASS] Kind embedding preserves valid structures: 5/5 (100%)
+
+Capabilities: 22/24 fully passing
+Test cases: 71/77 passing
+======================================================================
