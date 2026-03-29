@@ -32,3 +32,13 @@ def test_d_ff_defaults_to_4x_d_model():
 
     config_custom = YamlBertConfig(d_model=128, d_ff=1024)
     assert config_custom.d_ff == 1024
+
+
+def test_auxiliary_loss_weights():
+    config = YamlBertConfig()
+    assert config.aux_kind_weight == 0.1
+    assert config.aux_parent_weight == 0.1
+
+    config2 = YamlBertConfig(aux_kind_weight=0.5, aux_parent_weight=0.0)
+    assert config2.aux_kind_weight == 0.5
+    assert config2.aux_parent_weight == 0.0

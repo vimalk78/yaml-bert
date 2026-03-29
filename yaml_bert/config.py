@@ -22,6 +22,10 @@ class YamlBertConfig:
     num_epochs: int = 30
     max_seq_len: int = 512
 
+    # Auxiliary loss weights
+    aux_kind_weight: float = 0.1     # α: kind classification loss weight
+    aux_parent_weight: float = 0.1   # β: parent_key classification loss weight
+
     def __post_init__(self) -> None:
         if self.d_ff == 0:
             self.d_ff = 4 * self.d_model
