@@ -91,7 +91,7 @@ def score_yaml(
 
         t = lambda x: torch.tensor([x])
         with torch.no_grad():
-            logits = model(
+            logits, _, _ = model(
                 t(masked_ids), t(node_types), t(depths), t(siblings), t(parent_keys),
                 kind_ids=t(kind_ids),
             )

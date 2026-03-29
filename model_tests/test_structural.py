@@ -70,7 +70,7 @@ def predict_masked_key(
 
     t = lambda x: torch.tensor([x])
     with torch.no_grad():
-        logits = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids))
+        logits, _, _ = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids))
 
     probs = F.softmax(logits[0, mask_position], dim=-1)
     topk = probs.topk(k)

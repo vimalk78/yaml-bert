@@ -47,7 +47,7 @@ class YamlBertEvaluator:
 
             kind_ids_tensor = item["kind_ids"].unsqueeze(0).to(self.device) if "kind_ids" in item else None
 
-            key_logits: torch.Tensor = self.model(
+            key_logits, _, _ = self.model(
                 token_ids=batch["token_ids"],
                 node_types=batch["node_types"],
                 depths=batch["depths"],
@@ -157,7 +157,7 @@ class YamlBertEvaluator:
 
         kind_ids_tensor = item["kind_ids"].unsqueeze(0).to(self.device) if "kind_ids" in item else None
 
-        key_logits: torch.Tensor = self.model(
+        key_logits, _, _ = self.model(
             token_ids=batch["token_ids"],
             node_types=batch["node_types"],
             depths=batch["depths"],
