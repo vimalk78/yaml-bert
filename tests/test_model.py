@@ -33,7 +33,7 @@ def test_model_output_shape():
     siblings = torch.randint(0, 3, (batch_size, seq_len))
     parent_keys = torch.randint(0, 50, (batch_size, seq_len))
 
-    key_logits = model(token_ids, node_types, depths, siblings, parent_keys)
+    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
 
     assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
 
@@ -54,7 +54,7 @@ def test_model_with_padding_mask():
         [False, False, False, True, True],
     ])
 
-    key_logits = model(
+    key_logits, _, _ = model(
         token_ids, node_types, depths, siblings, parent_keys,
         padding_mask=padding_mask,
     )
@@ -77,7 +77,7 @@ def test_model_loss_computation():
     labels[0, 1] = 10
     labels[1, 0] = 20
 
-    key_logits = model(token_ids, node_types, depths, siblings, parent_keys)
+    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
     loss = model.compute_loss(key_logits, labels)
 
     assert loss.dim() == 0
@@ -101,7 +101,7 @@ def test_model_with_kind_ids():
     parent_keys = torch.randint(0, 50, (batch_size, seq_len))
     kind_ids = torch.tensor([[1, 1, 1, 1, 1], [2, 2, 2, 2, 2]])
 
-    key_logits = model(token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids)
+    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids)
     assert key_logits.shape == (batch_size, seq_len, 100)
 
 
@@ -115,5 +115,73 @@ def test_model_without_kind_ids_backward_compatible():
     siblings = torch.randint(0, 3, (batch_size, seq_len))
     parent_keys = torch.randint(0, 50, (batch_size, seq_len))
 
-    key_logits = model(token_ids, node_types, depths, siblings, parent_keys)
+    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
     assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
+
+
+def test_model_returns_auxiliary_logits():
+    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
+    emb = YamlBertEmbedding(
+        config=config, key_vocab_size=100, value_vocab_size=200, kind_vocab_size=10,
+    )
+    model = YamlBertModel(
+        config=config, embedding=emb, key_vocab_size=100, kind_vocab_size=10,
+    )
+
+    batch_size = 2
+    seq_len = 5
+    token_ids = torch.randint(0, 50, (batch_size, seq_len))
+    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
+    depths = torch.randint(0, 5, (batch_size, seq_len))
+    siblings = torch.randint(0, 3, (batch_size, seq_len))
+    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
+    kind_ids = torch.ones(batch_size, seq_len, dtype=torch.long)
+
+    key_logits, kind_logits, parent_logits = model(
+        token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids,
+    )
+
+    assert key_logits.shape == (batch_size, seq_len, 100)
+    assert kind_logits.shape == (batch_size, seq_len, 10)
+    assert parent_logits.shape == (batch_size, seq_len, 100)
+
+
+def test_model_auxiliary_loss():
+    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
+    emb = YamlBertEmbedding(
+        config=config, key_vocab_size=100, value_vocab_size=200, kind_vocab_size=10,
+    )
+    model = YamlBertModel(
+        config=config, embedding=emb, key_vocab_size=100, kind_vocab_size=10,
+    )
+
+    batch_size = 2
+    seq_len = 5
+    token_ids = torch.randint(0, 50, (batch_size, seq_len))
+    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
+    depths = torch.randint(0, 5, (batch_size, seq_len))
+    siblings = torch.randint(0, 3, (batch_size, seq_len))
+    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
+    kind_ids = torch.ones(batch_size, seq_len, dtype=torch.long)
+
+    labels = torch.full((batch_size, seq_len), -100, dtype=torch.long)
+    labels[0, 1] = 10
+
+    key_logits, kind_logits, parent_logits = model(
+        token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids,
+    )
+
+    loss = model.compute_loss(
+        key_logits=key_logits,
+        labels=labels,
+        kind_logits=kind_logits,
+        kind_labels=kind_ids,
+        parent_logits=parent_logits,
+        parent_labels=parent_keys,
+        alpha=0.1,
+        beta=0.1,
+    )
+
+    assert loss.dim() == 0
+    assert loss.item() > 0
+    assert loss.requires_grad
