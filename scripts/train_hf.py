@@ -96,6 +96,7 @@ def main() -> None:
 
     print(f"Key vocab: {len(vocab.key_vocab)} tokens")
     print(f"Value vocab: {len(vocab.value_vocab)} tokens")
+    print(f"Kind vocab: {vocab.kind_vocab_size} kinds")
 
     # Step 2: Load dataset
     print("\n" + "=" * 60)
@@ -121,6 +122,7 @@ def main() -> None:
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
+        kind_vocab_size=vocab.kind_vocab_size,
     )
     model: YamlBertModel = YamlBertModel(
         config=config,

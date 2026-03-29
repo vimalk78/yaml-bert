@@ -29,6 +29,12 @@ def main() -> None:
     model_state: dict = cp["model_state_dict"]
     num_params: int = sum(p.numel() for p in model_state.values())
 
+    # Print kind embedding info if present
+    kind_emb_key: str = "embedding.kind_embedding.weight"
+    if kind_emb_key in model_state:
+        kind_vocab_size: int = model_state[kind_emb_key].shape[0]
+        print(f"Kind embedding: {kind_vocab_size} kinds")
+
     # Determine output path
     if args.output:
         output_path: str = args.output
