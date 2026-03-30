@@ -1,6 +1,6 @@
 import torch
 from yaml_bert.config import YamlBertConfig
-from yaml_bert.embedding import YamlBertEmbedding
+from yaml_bert.embedding import YamlBertEmbedding, YamlBertEmbeddingV4
 from yaml_bert.types import NodeType
 
 
@@ -111,3 +111,29 @@ def test_embedding_without_kind_backward_compatible():
 
     output = emb(token_ids, node_types, depths, siblings, parent_keys)
     assert output.shape == (1, 1, 32)
+
+
+def test_v4_embedding_output_shape():
+    config = YamlBertConfig(d_model=64)
+    emb = YamlBertEmbeddingV4(config=config, key_vocab_size=100, value_vocab_size=200)
+
+    token_ids = torch.tensor([[3, 4, 5]])
+    node_types = torch.tensor([[0, 1, 0]])
+    depths = torch.tensor([[0, 0, 1]])
+    siblings = torch.tensor([[0, 0, 0]])
+
+    output = emb(token_ids, node_types, depths, siblings)
+    assert output.shape == (1, 3, 64)
+
+
+def test_v4_embedding_no_kind_or_parent_params():
+    config = YamlBertConfig(d_model=32)
+    emb = YamlBertEmbeddingV4(config=config, key_vocab_size=10, value_vocab_size=10)
+
+    # Should NOT have kind_embedding or parent_key_embedding
+    assert not hasattr(emb, 'kind_embedding') or emb.kind_embedding is None
+    assert not hasattr(emb, 'parent_key_embedding')
+
+    # Should have exactly 5 embedding tables
+    embedding_count = sum(1 for name, _ in emb.named_modules() if isinstance(_, torch.nn.Embedding))
+    assert embedding_count == 5  # key, value, depth, sibling, node_type

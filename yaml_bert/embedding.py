@@ -75,3 +75,48 @@ class YamlBertEmbedding(nn.Module):
             tree_pos = tree_pos + self.kind_embedding(kind_ids)
 
         return self.layer_norm(token_emb + tree_pos)
+
+
+class YamlBertEmbeddingV4(nn.Module):
+    """v4 embedding: 4 tables only (no kind_emb, no parent_key_emb).
+
+    Tree positional encoding: depth + sibling + node_type.
+    Kind and parent awareness come from the hybrid prediction targets, not input encoding.
+    """
+
+    def __init__(
+        self,
+        config: YamlBertConfig,
+        key_vocab_size: int,
+        value_vocab_size: int,
+    ) -> None:
+        super().__init__()
+        d: int = config.d_model
+        self.key_embedding: nn.Embedding = nn.Embedding(key_vocab_size, d)
+        self.value_embedding: nn.Embedding = nn.Embedding(value_vocab_size, d)
+        self.depth_embedding: nn.Embedding = nn.Embedding(config.max_depth, d)
+        self.sibling_embedding: nn.Embedding = nn.Embedding(config.max_sibling, d)
+        self.node_type_embedding: nn.Embedding = nn.Embedding(4, d)
+        self.layer_norm: nn.LayerNorm = nn.LayerNorm(d)
+
+    def forward(
+        self,
+        token_ids: torch.Tensor,
+        node_types: torch.Tensor,
+        depths: torch.Tensor,
+        sibling_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        is_key: torch.Tensor = (node_types == 0) | (node_types == 2)
+        key_vocab_size: int = self.key_embedding.num_embeddings
+        val_vocab_size: int = self.value_embedding.num_embeddings
+        key_emb: torch.Tensor = self.key_embedding(token_ids.clamp(0, key_vocab_size - 1))
+        val_emb: torch.Tensor = self.value_embedding(token_ids.clamp(0, val_vocab_size - 1))
+        token_emb: torch.Tensor = torch.where(is_key.unsqueeze(-1), key_emb, val_emb)
+
+        tree_pos: torch.Tensor = (
+            self.depth_embedding(depths)
+            + self.sibling_embedding(sibling_indices)
+            + self.node_type_embedding(node_types)
+        )
+
+        return self.layer_norm(token_emb + tree_pos)
