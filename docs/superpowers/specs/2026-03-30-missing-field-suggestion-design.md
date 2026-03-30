@@ -153,12 +153,14 @@ python scripts/suggest_fields.py checkpoint.pt --yaml-file my-pod.yaml --thresho
 python scripts/suggest_fields.py checkpoint.pt --yaml-file my-pod.yaml --format json
 ```
 
-## What This Does NOT Do
+## What This Does NOT Do (covered by other downstream tasks)
 
-- Schema validation (use kubectl for that)
-- Value checking (doesn't check if replicas=9999 is reasonable)
-- Cross-resource validation (doesn't check if selectors match)
-- Security-specific checks (a separate task)
+- **Schema validation** — use kubectl for that
+- **Value checking** (replicas=9999 is reasonable?) — future downstream task
+- **Cross-resource validation** (selectors match?) — Downstream Task 6
+- **Security posture scoring** (running as root?) — Downstream Task 4
+- **Per-node validity** (is this key valid for this kind?) — Downstream Task 3, requires fine-tuning
+- **Best practice compliance report** — Downstream Task 7, builds on this task's output
 
 ## Dependencies
 
