@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model(checkpoint_path: str, vocab_path: str, device: str) -> tuple[YamlBertModel, Vocabulary]:
+    # Fixed seed before model creation so randomly-initialized layers
+    # (kind_classifier, parent_key_classifier) get consistent weights
+    # when loading v1 checkpoints with strict=False
+    import torch
+    torch.manual_seed(42)
+
     vocab: Vocabulary = Vocabulary.load(vocab_path)
     config: YamlBertConfig = YamlBertConfig()
     emb = YamlBertEmbedding(
