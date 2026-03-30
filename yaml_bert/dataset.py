@@ -11,7 +11,7 @@ from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.types import NodeType, YamlNode
-from yaml_bert.vocab import Vocabulary
+from yaml_bert.vocab import Vocabulary, compute_target
 
 
 def _extract_kind(nodes: list[YamlNode]) -> str:
@@ -145,10 +145,100 @@ class YamlDataset(Dataset):
         instance.document_kinds = [_extract_kind(doc) for doc in documents]
         return instance
 
+    @classmethod
+    def from_cached_docs_v4(
+        cls,
+        documents: list[list[YamlNode]],
+        vocab: Vocabulary,
+        config: YamlBertConfig | None = None,
+    ) -> "YamlDataset":
+        """Build v4 dataset from pre-linearized cached documents."""
+        config = config or YamlBertConfig()
+        instance = cls.__new__(cls)
+        instance.vocab = vocab
+        instance.linearizer = None
+        instance.annotator = None
+        instance.mask_prob = config.mask_prob
+        instance.max_seq_len = config.max_seq_len
+        instance.documents = documents
+        instance.document_kinds = [_extract_kind(doc) for doc in documents]
+        instance._v4_mode = True  # Flag for __getitem__
+        return instance
+
     def __len__(self) -> int:
         return len(self.documents)
 
+    def _getitem_v4(self, idx: int) -> dict[str, torch.Tensor]:
+        """v4 item encoding: hybrid simple/kind labels, no parent_key_ids or kind_ids."""
+        nodes: list[YamlNode] = self.documents[idx]
+
+        # Truncate if needed
+        if len(nodes) > self.max_seq_len:
+            nodes = nodes[: self.max_seq_len]
+
+        seq_len: int = len(nodes)
+        kind: str = self.document_kinds[idx]
+
+        token_ids: list[int] = []
+        node_types: list[int] = []
+        depths: list[int] = []
+        sibling_indices: list[int] = []
+
+        for node in nodes:
+            if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
+                token_ids.append(self.vocab.encode_key(node.token))
+            else:
+                token_ids.append(self.vocab.encode_value(node.token))
+
+            node_types.append(_NODE_TYPE_INDEX[node.node_type])
+            depths.append(min(node.depth, 15))
+            sibling_indices.append(min(node.sibling_index, 31))
+
+        # Apply masking
+        simple_labels: list[int] = [-100] * seq_len
+        kind_labels: list[int] = [-100] * seq_len
+        mask_token_id: int = self.vocab.special_tokens["[MASK]"]
+
+        for i in range(seq_len):
+            if nodes[i].node_type not in _MASKABLE_TYPES:
+                continue
+            if random.random() >= self.mask_prob:
+                continue
+
+            # Compute hybrid target
+            target, head_type = compute_target(nodes[i], kind)
+            if head_type == "simple":
+                simple_labels[i] = self.vocab.encode_simple_target(target)
+                kind_labels[i] = -100
+            else:
+                kind_labels[i] = self.vocab.encode_kind_target(target)
+                simple_labels[i] = -100
+
+            # Apply token replacement (80/10/10 rule)
+            rand: float = random.random()
+            if rand < 0.8:
+                token_ids[i] = mask_token_id
+            elif rand < 0.9:
+                random_key_id: int = random.randint(
+                    len(self.vocab.special_tokens),
+                    len(self.vocab.key_vocab) + len(self.vocab.special_tokens) - 1,
+                )
+                token_ids[i] = random_key_id
+            # else 10%: keep unchanged
+
+        return {
+            "token_ids": torch.tensor(token_ids, dtype=torch.long),
+            "node_types": torch.tensor(node_types, dtype=torch.long),
+            "depths": torch.tensor(depths, dtype=torch.long),
+            "sibling_indices": torch.tensor(sibling_indices, dtype=torch.long),
+            "simple_labels": torch.tensor(simple_labels, dtype=torch.long),
+            "kind_labels": torch.tensor(kind_labels, dtype=torch.long),
+        }
+
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        if getattr(self, "_v4_mode", False):
+            return self._getitem_v4(idx)
+
         nodes: list[YamlNode] = self.documents[idx]
 
         # Truncate if needed
@@ -232,7 +322,7 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
 
         for key in item:
             if pad_len > 0:
-                pad_value: int = -100 if key == "labels" else 0
+                pad_value: int = -100 if (key == "labels" or key.endswith("_labels")) else 0
                 padding: torch.Tensor = torch.full(
                     (pad_len,), pad_value, dtype=torch.long
                 )

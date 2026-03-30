@@ -157,3 +157,34 @@ def test_collate_fn_pads_kind_ids():
     assert "kind_ids" in batch
     assert batch["kind_ids"].shape == (2, 3)
     assert batch["kind_ids"][1, 2].item() == 0  # padded with 0
+
+
+def test_v4_dataset_hybrid_labels():
+    vocab = _build_vocab()
+    linearizer = YamlLinearizer()
+    annotator = DomainAnnotator()
+    import glob
+    docs = []
+    for path in sorted(glob.glob(os.path.join(TEMPLATES_DIR, "**", "*.yaml"), recursive=True)):
+        nodes = linearizer.linearize_file(path)
+        if nodes:
+            annotator.annotate(nodes)
+            docs.append(nodes)
+
+    dataset = YamlDataset.from_cached_docs_v4(docs, vocab)
+    item = dataset[0]
+
+    assert "simple_labels" in item
+    assert "kind_labels" in item
+    assert "parent_key_ids" not in item
+    assert "kind_ids" not in item
+    assert "labels" not in item
+
+    # Check that masked positions have label in exactly one of simple/kind
+    simple = item["simple_labels"]
+    kind = item["kind_labels"]
+    masked = (simple != -100) | (kind != -100)
+    if masked.any():
+        # No position should have both set
+        both = (simple != -100) & (kind != -100)
+        assert not both.any(), "A position has both simple and kind labels"
