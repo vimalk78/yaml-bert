@@ -71,11 +71,17 @@ def suggest_missing_fields(
             keys_by_parent.setdefault(node.parent_path, set()).add(node.token)
             key_positions_by_parent.setdefault(node.parent_path, []).append(i)
 
-    # For each parent level, mask each existing key and collect runner-up
-    # predictions. The runner-ups are "what other key could go at this position?"
-    # — structurally grounded in real tree positions, not fake appended nodes.
+    # For each parent level, append a fake masked node as the "next sibling"
+    # to discover missing keys. Filter out noise: self-references, keys that
+    # already exist at root level, and special tokens.
     model.eval()
     predicted_keys_by_parent: dict[str, dict[str, float]] = {}
+
+    # Collect all existing keys across the entire document for cross-reference filtering
+    all_root_keys: set[str] = {
+        n.token for n in nodes
+        if n.node_type in (NodeType.KEY, NodeType.LIST_KEY) and n.depth == 0
+    }
 
     t = lambda x: torch.tensor([x])
 
@@ -83,36 +89,47 @@ def suggest_missing_fields(
         predicted: dict[str, float] = {}
         parent_key_name: str = parent_path.split(".")[-1] if parent_path else ""
 
-        for pos in positions:
-            actual_key: str = nodes[pos].token
-            masked_ids: list[int] = token_ids.copy()
-            masked_ids[pos] = mask_id
+        # Use the last key node at this level as a template for the fake node
+        last_pos: int = positions[-1]
+        last_node: YamlNode = nodes[last_pos]
+        next_sibling: int = min(last_node.sibling_index + 1, 31)
 
-            with torch.no_grad():
-                key_logits, _, _ = model(
-                    t(masked_ids), t(node_types), t(depths), t(siblings), t(parent_keys),
-                    kind_ids=t(kind_ids),
-                )
+        # Append a fake [MASK] node at the end of the sequence
+        fake_token_ids: list[int] = token_ids + [mask_id]
+        fake_node_types: list[int] = node_types + [_NODE_TYPE_INDEX[last_node.node_type]]
+        fake_depths: list[int] = depths + [last_node.depth]
+        fake_siblings: list[int] = siblings + [next_sibling]
+        fake_parent_keys: list[int] = parent_keys + [
+            vocab.encode_key(Vocabulary.extract_parent_key(last_node.parent_path))
+        ]
+        fake_kind_ids: list[int] = kind_ids + [kind_id]
+        fake_pos: int = len(token_ids)
 
-            probs: torch.Tensor = F.softmax(key_logits[0, pos], dim=-1)
-            topk = probs.topk(top_k + 5)  # extra to account for filtering
+        with torch.no_grad():
+            key_logits, _, _ = model(
+                t(fake_token_ids), t(fake_node_types), t(fake_depths),
+                t(fake_siblings), t(fake_parent_keys),
+                kind_ids=t(fake_kind_ids),
+            )
 
-            for j in range(topk.indices.shape[0]):
-                key_name: str = vocab.decode_key(topk.indices[j].item())
-                prob: float = topk.values[j].item()
+        probs: torch.Tensor = F.softmax(key_logits[0, fake_pos], dim=-1)
+        topk = probs.topk(top_k + 5)
 
-                # Skip special tokens
-                if key_name in ("[PAD]", "[UNK]", "[MASK]"):
-                    continue
-                # Skip the actual key (we want runner-ups only)
-                if key_name == actual_key:
-                    continue
-                # Skip self-referencing (key same as parent)
-                if key_name == parent_key_name:
-                    continue
+        for j in range(topk.indices.shape[0]):
+            key_name: str = vocab.decode_key(topk.indices[j].item())
+            prob: float = topk.values[j].item()
 
-                if key_name not in predicted or prob > predicted[key_name]:
-                    predicted[key_name] = prob
+            # Skip special tokens
+            if key_name in ("[PAD]", "[UNK]", "[MASK]"):
+                continue
+            # Skip self-referencing (key same as parent key name)
+            if key_name == parent_key_name:
+                continue
+            # Skip root-level keys suggested as children (e.g., roleRef under subjects)
+            if parent_path and key_name in all_root_keys and last_node.depth > 0:
+                continue
+
+            predicted[key_name] = prob
 
         predicted_keys_by_parent[parent_path] = predicted
 
