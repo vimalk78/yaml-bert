@@ -93,7 +93,11 @@ def main() -> None:
         with open(path) as f:
             yaml_text: str = f.read()
 
-        nodes = linearizer.linearize(yaml_text)
+        try:
+            docs = linearizer.linearize_multi_doc(yaml_text)
+            nodes = docs[0] if docs else []
+        except Exception:
+            continue
         if not nodes:
             continue
         annotator.annotate(nodes)
@@ -102,7 +106,10 @@ def main() -> None:
         if args.filter_kind and kind != args.filter_kind:
             continue
 
-        emb: torch.Tensor = get_document_embedding(model, pooling, vocab, yaml_text)
+        try:
+            emb: torch.Tensor = get_document_embedding(model, pooling, vocab, yaml_text)
+        except Exception:
+            continue
         embeddings.append(emb)
         file_names.append(os.path.relpath(path, args.corpus))
         file_kinds.append(kind)
@@ -119,7 +126,8 @@ def main() -> None:
         with open(args.query) as f:
             query_text: str = f.read()
         query_emb: torch.Tensor = get_document_embedding(model, pooling, vocab, query_text)
-        query_nodes = linearizer.linearize(query_text)
+        query_docs = linearizer.linearize_multi_doc(query_text)
+        query_nodes = query_docs[0] if query_docs else []
         query_kind: str = _extract_kind(query_nodes) if query_nodes else "?"
 
         sims: torch.Tensor = torch.nn.functional.cosine_similarity(
