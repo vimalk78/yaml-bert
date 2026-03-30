@@ -28,7 +28,9 @@ def extract_hidden_states(
 ) -> tuple[torch.Tensor, int]:
     linearizer: YamlLinearizer = YamlLinearizer()
     annotator: DomainAnnotator = DomainAnnotator()
-    nodes: list[YamlNode] = linearizer.linearize(yaml_text)
+    # Use linearize_multi_doc to handle --- separators, take the first doc
+    docs: list[list[YamlNode]] = linearizer.linearize_multi_doc(yaml_text)
+    nodes: list[YamlNode] = docs[0] if docs else []
     if not nodes:
         return torch.empty(0), -1
     annotator.annotate(nodes)

@@ -91,12 +91,20 @@ def main() -> None:
     skipped: int = 0
 
     for i, yaml_text in enumerate(yaml_texts):
-        hidden, kind_pos = extract_hidden_states(model, vocab, yaml_text)
+        try:
+            hidden, kind_pos = extract_hidden_states(model, vocab, yaml_text)
+        except Exception:
+            skipped += 1
+            continue
         if hidden.shape[0] == 0 or kind_pos < 0:
             skipped += 1
             continue
 
-        nodes = linearizer.linearize(yaml_text)
+        try:
+            nodes = linearizer.linearize(yaml_text)
+        except Exception:
+            skipped += 1
+            continue
         if not nodes:
             skipped += 1
             continue
