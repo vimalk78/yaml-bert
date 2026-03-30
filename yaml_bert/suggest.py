@@ -13,6 +13,12 @@ from yaml_bert.types import NodeType, YamlNode
 from yaml_bert.vocab import Vocabulary
 
 
+# Keys managed by the cluster, not written by users
+_CLUSTER_MANAGED_KEYS: set[str] = {
+    "status", "creationTimestamp", "generation", "resourceVersion",
+    "selfLink", "uid", "managedFields",
+}
+
 _NODE_TYPE_INDEX: dict[NodeType, int] = {
     NodeType.KEY: 0,
     NodeType.VALUE: 1,
@@ -140,7 +146,9 @@ def suggest_missing_fields(
     for parent_path, predicted in predicted_keys_by_parent.items():
         existing: set[str] = keys_by_parent.get(parent_path, set())
         for key_name, confidence in predicted.items():
-            if key_name not in existing and confidence >= threshold:
+            if (key_name not in existing
+                    and key_name not in _CLUSTER_MANAGED_KEYS
+                    and confidence >= threshold):
                 suggestions.append({
                     "parent_path": parent_path,
                     "missing_key": key_name,
