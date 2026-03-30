@@ -186,9 +186,16 @@ class YamlBertModelV4(nn.Module):
             simple_logits.view(-1, simple_logits.size(-1)),
             simple_labels.view(-1),
         )
-        kind_loss: torch.Tensor = self.loss_fn(
-            kind_logits.view(-1, kind_logits.size(-1)),
-            kind_labels.view(-1),
-        )
+
+        # Kind loss: only compute if there are kind-specific labels in this batch
+        has_kind: bool = (kind_labels != -100).any().item()
+        if has_kind:
+            kind_loss: torch.Tensor = self.loss_fn(
+                kind_logits.view(-1, kind_logits.size(-1)),
+                kind_labels.view(-1),
+            )
+        else:
+            kind_loss = torch.tensor(0.0, device=simple_logits.device)
+
         total: torch.Tensor = simple_loss + kind_loss
         return total, {"simple": simple_loss.item(), "kind": kind_loss.item()}
