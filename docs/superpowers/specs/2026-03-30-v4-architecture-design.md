@@ -92,30 +92,32 @@ Target vocabulary: bigram tokens like `metadata::name`, `containers::image`, `en
 
 ### Kind-Specific Head
 
-Predicts kind-dependent structure — first-level children under `spec` and `status`.
+Predicts kind-dependent structure — first-level children under any kind-specific root key (everything except `apiVersion`, `kind`, `metadata`).
 
 ```python
 self.kind_head: nn.Linear = nn.Linear(d_model, kind_vocab_size)
 ```
 
-Target vocabulary: trigram tokens like `Deployment::spec::replicas`, `Service::spec::ports`, `Pod::spec::containers`.
+Target vocabulary: trigram tokens like `Deployment::spec::replicas`, `Service::spec::ports`, `ConfigMap::data::DB_HOST`, `ClusterRole::rules::apiGroups`.
 
-- Vocabulary size: ~300 at min_freq=100
-- Parameters: 256 × 300 = ~77K
+- Vocabulary size: ~300-500 at min_freq=100 (includes all kind-specific root keys, not just spec)
+- Parameters: 256 × 500 = ~128K
 
 ### Which Head Predicts Which Node
 
 Determined by tree position — a static rule, not learned:
 
 ```python
+# Root keys that are universal (TypeMeta + ObjectMeta)
+UNIVERSAL_ROOT_KEYS = {"apiVersion", "kind", "metadata"}
+
 def get_head(node: YamlNode) -> str:
     if node.depth == 0:
-        return "simple"                    # root keys
-    if node.parent_path.startswith("metadata"):
-        return "simple"                    # ObjectMeta children
-    if node.depth == 1 and parent_is_root(node):
-        return "kind_specific"             # first-level spec/status children
-    return "simple"                        # everything deeper
+        return "simple"                              # root keys themselves
+    parent_key = extract_parent_key(node.parent_path)
+    if node.depth == 1 and parent_key not in UNIVERSAL_ROOT_KEYS:
+        return "kind_specific"                       # first-level under kind-specific root
+    return "simple"                                  # everything else
 ```
 
 | Tree position | Head | Target example |
@@ -123,12 +125,28 @@ def get_head(node: YamlNode) -> str:
 | Root keys (depth=0) | Simple | `"metadata"` (unigram) |
 | Under metadata | Simple | `"metadata::name"` (bigram) |
 | First level under spec | Kind-specific | `"Deployment::spec::replicas"` (trigram) |
-| Deeper under spec | Simple | `"containers::image"` (bigram) |
-| Under status | Kind-specific | `"Deployment::status::availableReplicas"` (trigram) |
+| First level under data | Kind-specific | `"ConfigMap::data::DB_HOST"` (trigram) |
+| First level under rules | Kind-specific | `"ClusterRole::rules::apiGroups"` (trigram) |
+| First level under subjects | Kind-specific | `"RoleBinding::subjects::kind"` (trigram) |
+| First level under roleRef | Kind-specific | `"RoleBinding::roleRef::apiGroup"` (trigram) |
+| First level under webhooks | Kind-specific | `"ValidatingWebhookConfiguration::webhooks::name"` (trigram) |
+| Deeper under any root key | Simple | `"containers::image"` (bigram) |
+
+### The Rule
+
+All root keys except `apiVersion`, `kind`, and `metadata` are kind-specific. Their first-level children use trigram targets with the kind prefix. This covers:
+- `spec` (Deployment, Service, Pod, StatefulSet, ...)
+- `status` (runtime state)
+- `data` (ConfigMap, Secret)
+- `rules` (ClusterRole, Ingress, NetworkPolicy)
+- `subjects` (RoleBinding, ClusterRoleBinding)
+- `roleRef` (RoleBinding, ClusterRoleBinding)
+- `webhooks` (ValidatingWebhookConfiguration, MutatingWebhookConfiguration)
+- Any other kind-specific root key
 
 ## Hybrid Prediction Targets
 
-Inspired by n-gram language models. The target for each masked key includes context:
+Inspired by n-gram language models. The target for each masked key includes context proportional to how kind-specific the position is.
 
 ### Unigram (root keys)
 ```
@@ -139,20 +157,22 @@ spec → "spec"
 ```
 
 ### Bigram (universal structure — parent::key)
+
+Used for children under `metadata` (ObjectMeta) and for deeper nested nodes everywhere:
 ```
 metadata.name → "metadata::name"
 metadata.labels → "metadata::labels"
+metadata.namespace → "metadata::namespace"
 containers.image → "containers::image"
 containers.name → "containers::name"
 ports.containerPort → "ports::containerPort"
 env.name → "env::name"
-env.value → "env::value"
 selector.matchLabels → "selector::matchLabels"
 ```
 
-The `::` separator avoids ambiguity with dots in K8s key names like `app.kubernetes.io/name`.
+### Trigram (kind-specific — kind::root_key::key)
 
-### Trigram (kind-specific — kind::spec::key)
+Used for first-level children under any kind-specific root key:
 ```
 Deployment::spec::replicas
 Deployment::spec::selector
@@ -164,28 +184,25 @@ Service::spec::type
 Pod::spec::containers
 Pod::spec::volumes
 StatefulSet::spec::serviceName
-StatefulSet::spec::volumeClaimTemplates
-DaemonSet::spec::updateStrategy
-CronJob::spec::schedule
-CronJob::spec::jobTemplate
-Job::spec::template
-Job::spec::backoffLimit
-PersistentVolumeClaim::spec::accessModes
-PersistentVolumeClaim::spec::resources
-CustomResourceDefinition::spec::group
-CustomResourceDefinition::spec::names
-CustomResourceDefinition::spec::scope
-CustomResourceDefinition::spec::versions
+ConfigMap::data::DB_HOST
+Secret::data::password
+ClusterRole::rules::apiGroups
+ClusterRole::rules::resources
+ClusterRole::rules::verbs
+RoleBinding::subjects::kind
+RoleBinding::roleRef::apiGroup
 Ingress::spec::rules
 NetworkPolicy::spec::podSelector
 ```
 
+The `::` separator avoids ambiguity with dots in K8s key names like `app.kubernetes.io/name`.
+
 ### Why This Scheme Works
 
-Follows the Kubernetes object model:
+Follows the Kubernetes object model. Every K8s resource embeds:
 
 ```go
-type PowerMonitor struct {
+type AnyResource struct {
     metav1.TypeMeta   `json:",inline"`      // → unigram targets (universal)
     metav1.ObjectMeta `json:"metadata"`     // → bigram targets (universal)
     Spec   PowerMonitorSpec   `json:"spec"` // → trigram targets (kind-specific)
@@ -238,7 +255,7 @@ Same as v1-v3:
 | Vocabulary | Size | Purpose |
 |---|---|---|
 | Simple targets | ~1,700 | Unigrams + bigrams for simple head |
-| Kind-specific targets | ~300 | Trigrams for kind-specific head |
+| Kind-specific targets | ~300-500 | Trigrams for kind-specific head (all kind-specific root keys, not just spec) |
 
 Built from 276,520 documents in the substratusai/the-stack-yaml-k8s dataset.
 
@@ -285,7 +302,7 @@ Each training example produces two label tensors:
 | LayerNorm (embedding) | 512 |
 | Transformer (6 layers) | ~4,800K |
 | Simple prediction head | 1,700 × 256 = 435K |
-| Kind-specific prediction head | 300 × 256 = 77K |
+| Kind-specific prediction head | 500 × 256 = 128K |
 | **Total** | **~7.1M** |
 
 ## VRAM Estimate
@@ -296,7 +313,7 @@ Each training example produces two label tensors:
 | Optimizer states (AdamW, 2×) | 56 MB |
 | Gradients | 28 MB |
 | Simple logits (32 × 512 × 1700) | 107 MB |
-| Kind logits (32 × 512 × 300) | 19 MB |
+| Kind logits (32 × 512 × 500) | 31 MB |
 | Attention matrices (6 layers) | 300 MB |
 | Other activations | ~200 MB |
 | **Total** | **~740 MB** |
