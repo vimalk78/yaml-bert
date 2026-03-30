@@ -127,7 +127,19 @@ def main() -> None:
         print("Provide --yaml-file, --yaml-dir, or --yaml-text")
         return
 
+    import yaml as pyyaml
     for source, yaml_text in yaml_files:
+        # Extract kind and name for display
+        try:
+            doc = pyyaml.safe_load(yaml_text)
+            if isinstance(doc, dict):
+                kind: str = doc.get("kind", "")
+                name: str = doc.get("metadata", {}).get("name", "") if isinstance(doc.get("metadata"), dict) else ""
+                if kind:
+                    source = f"{source} ({kind}/{name})" if name else f"{source} ({kind})"
+        except Exception:
+            pass
+
         suggestions = suggest_missing_fields(model, vocab, yaml_text, threshold=args.threshold)
         print_report(suggestions, source=source, fmt=args.format)
 
