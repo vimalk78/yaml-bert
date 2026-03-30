@@ -6,6 +6,24 @@ from yaml_bert.types import NodeType, YamlNode
 
 SPECIAL_TOKENS = ["[PAD]", "[UNK]", "[MASK]"]
 
+UNIVERSAL_ROOT_KEYS: set[str] = {"apiVersion", "kind", "metadata"}
+
+
+def compute_target(node: YamlNode, kind: str) -> tuple[str, str]:
+    """Compute hybrid prediction target.
+
+    Returns (target_string, head_type) where head_type is "simple" or "kind_specific".
+    """
+    if node.depth == 0:
+        return node.token, "simple"
+
+    parent_key: str = Vocabulary.extract_parent_key(node.parent_path)
+
+    if node.depth == 1 and parent_key not in UNIVERSAL_ROOT_KEYS and parent_key != "":
+        return f"{kind}::{parent_key}::{node.token}", "kind_specific"
+
+    return (f"{parent_key}::{node.token}" if parent_key else node.token), "simple"
+
 
 class Vocabulary:
     def __init__(
@@ -14,11 +32,15 @@ class Vocabulary:
         value_vocab: dict[str, int],
         special_tokens: dict[str, int],
         kind_vocab: dict[str, int] | None = None,
+        simple_target_vocab: dict[str, int] | None = None,
+        kind_target_vocab: dict[str, int] | None = None,
     ) -> None:
         self.key_vocab = key_vocab
         self.value_vocab = value_vocab
         self.special_tokens = special_tokens
         self.kind_vocab = kind_vocab or {"[NO_KIND]": 0}
+        self.simple_target_vocab = simple_target_vocab or {}
+        self.kind_target_vocab = kind_target_vocab or {}
         self._id_to_key = {v: k for k, v in key_vocab.items()}
         self._id_to_value = {v: k for k, v in value_vocab.items()}
         self._id_to_special = {v: k for k, v in special_tokens.items()}
@@ -43,6 +65,12 @@ class Vocabulary:
         if id in self._id_to_special:
             return self._id_to_special[id]
         return self._id_to_value.get(id, "[UNK]")
+
+    def encode_simple_target(self, target: str) -> int:
+        return self.simple_target_vocab.get(target, self.special_tokens["[UNK]"])
+
+    def encode_kind_target(self, target: str) -> int:
+        return self.kind_target_vocab.get(target, self.special_tokens["[UNK]"])
 
     @staticmethod
     def extract_parent_key(parent_path: str) -> str:
@@ -73,12 +101,22 @@ class Vocabulary:
     def kind_vocab_size(self) -> int:
         return len(self.kind_vocab)
 
+    @property
+    def simple_target_vocab_size(self) -> int:
+        return len(self.simple_target_vocab) + len(self.special_tokens)
+
+    @property
+    def kind_target_vocab_size(self) -> int:
+        return len(self.kind_target_vocab) + len(self.special_tokens)
+
     def save(self, path: str) -> None:
         data = {
             "key_vocab": self.key_vocab,
             "value_vocab": self.value_vocab,
             "special_tokens": self.special_tokens,
             "kind_vocab": self.kind_vocab,
+            "simple_target_vocab": self.simple_target_vocab,
+            "kind_target_vocab": self.kind_target_vocab,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -92,6 +130,8 @@ class Vocabulary:
             value_vocab=data["value_vocab"],
             special_tokens=data["special_tokens"],
             kind_vocab=data.get("kind_vocab"),
+            simple_target_vocab=data.get("simple_target_vocab", {}),
+            kind_target_vocab=data.get("kind_target_vocab", {}),
         )
 
 
@@ -100,19 +140,31 @@ class VocabBuilder:
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
         kind_set: set[str] = set()
+        simple_target_set: set[str] = set()
+        kind_target_set: set[str] = set()
 
+        current_kind: str = ""
         prev_was_kind_key: bool = False
         for node in nodes:
             if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
                 key_counts[node.token] = key_counts.get(node.token, 0) + 1
                 prev_was_kind_key = (node.token == "kind" and node.depth == 0)
+                target, head_type = compute_target(node, current_kind)
+                if head_type == "kind_specific":
+                    kind_target_set.add(target)
+                else:
+                    simple_target_set.add(target)
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
                 if prev_was_kind_key:
                     kind_set.add(node.token)
+                    current_kind = node.token
                 prev_was_kind_key = False
 
-        return self.build_from_counts(key_counts, value_counts, min_freq, kind_set)
+        return self.build_from_counts(
+            key_counts, value_counts, min_freq, kind_set,
+            simple_target_set, kind_target_set,
+        )
 
     @staticmethod
     def build_from_counts(
@@ -120,6 +172,8 @@ class VocabBuilder:
         value_counts: dict[str, int],
         min_freq: int = 1,
         kind_set: set[str] | None = None,
+        simple_target_set: set[str] | None = None,
+        kind_target_set: set[str] | None = None,
     ) -> Vocabulary:
         """Build vocabulary from pre-computed token counts."""
         special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
@@ -143,7 +197,18 @@ class VocabBuilder:
         for i, kind in enumerate(sorted(kind_set or [])):
             kind_vocab[kind] = i + 1
 
-        return Vocabulary(key_vocab, value_vocab, special_tokens, kind_vocab)
+        simple_target_vocab = {
+            target: i + offset
+            for i, target in enumerate(sorted(simple_target_set or []))
+        }
+
+        kind_target_vocab = {
+            target: i + offset
+            for i, target in enumerate(sorted(kind_target_set or []))
+        }
+
+        return Vocabulary(key_vocab, value_vocab, special_tokens, kind_vocab,
+                          simple_target_vocab, kind_target_vocab)
 
     @staticmethod
     def save_counts(
