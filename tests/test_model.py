@@ -78,9 +78,10 @@ def test_model_loss_computation():
     labels[1, 0] = 20
 
     key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
-    loss = model.compute_loss(key_logits, labels)
+    loss, breakdown = model.compute_loss(key_logits, labels)
 
     assert loss.dim() == 0
+    assert "key" in breakdown
     assert loss.item() > 0
     assert loss.requires_grad
 
@@ -171,7 +172,7 @@ def test_model_auxiliary_loss():
         token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids,
     )
 
-    loss = model.compute_loss(
+    loss, breakdown = model.compute_loss(
         key_logits=key_logits,
         labels=labels,
         kind_logits=kind_logits,
@@ -183,5 +184,8 @@ def test_model_auxiliary_loss():
     )
 
     assert loss.dim() == 0
+    assert "key" in breakdown
+    assert "kind" in breakdown
+    assert "parent" in breakdown
     assert loss.item() > 0
     assert loss.requires_grad

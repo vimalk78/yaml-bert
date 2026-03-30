@@ -74,13 +74,19 @@ class YamlBertModel(nn.Module):
         parent_labels: torch.Tensor | None = None,
         alpha: float = 0.0,
         beta: float = 0.0,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Compute total loss and return breakdown.
+
+        Returns:
+            (total_loss, {"key": float, "kind": float, "parent": float})
+        """
         key_loss: torch.Tensor = self.key_loss_fn(
             key_logits.view(-1, key_logits.size(-1)),
             labels.view(-1),
         )
 
         total_loss: torch.Tensor = key_loss
+        breakdown: dict[str, float] = {"key": key_loss.item()}
 
         if alpha > 0 and kind_logits is not None and kind_labels is not None:
             kind_loss: torch.Tensor = self.aux_loss_fn(
@@ -88,6 +94,7 @@ class YamlBertModel(nn.Module):
                 kind_labels.view(-1),
             )
             total_loss = total_loss + alpha * kind_loss
+            breakdown["kind"] = kind_loss.item()
 
         if beta > 0 and parent_logits is not None and parent_labels is not None:
             parent_loss: torch.Tensor = self.aux_loss_fn(
@@ -95,8 +102,9 @@ class YamlBertModel(nn.Module):
                 parent_labels.view(-1),
             )
             total_loss = total_loss + beta * parent_loss
+            breakdown["parent"] = parent_loss.item()
 
-        return total_loss
+        return total_loss, breakdown
 
     @torch.no_grad()
     def get_attention_weights(

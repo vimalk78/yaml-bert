@@ -73,6 +73,7 @@ class YamlBertTrainer:
         for epoch in range(start_epoch, self.config.num_epochs):
             total_loss: float = 0.0
             num_batches: int = 0
+            running_breakdown: dict[str, float] = {}
 
             pbar = tqdm(
                 dataloader,
@@ -94,7 +95,7 @@ class YamlBertTrainer:
                     kind_ids=batch.get("kind_ids"),
                 )
 
-                loss: torch.Tensor = self.model.compute_loss(
+                loss, loss_breakdown = self.model.compute_loss(
                     key_logits=key_logits,
                     labels=batch["labels"],
                     kind_logits=kind_logits,
@@ -109,12 +110,22 @@ class YamlBertTrainer:
                 optimizer.step()
 
                 total_loss += loss.item()
+                for k, v in loss_breakdown.items():
+                    running_breakdown[k] = running_breakdown.get(k, 0.0) + v
                 num_batches += 1
-                pbar.set_postfix(loss=f"{total_loss / num_batches:.4f}")
+                postfix: dict[str, str] = {"loss": f"{total_loss / num_batches:.4f}"}
+                for k in ["key", "kind", "parent"]:
+                    if k in running_breakdown:
+                        postfix[k] = f"{running_breakdown[k] / num_batches:.4f}"
+                pbar.set_postfix(**postfix)
 
             avg_loss: float = total_loss / max(num_batches, 1)
             epoch_losses.append(avg_loss)
-            print(f"Epoch {epoch + 1}/{self.config.num_epochs} — loss: {avg_loss:.4f}")
+            breakdown_str: str = " | ".join(
+                f"{k}: {v / max(num_batches, 1):.4f}"
+                for k, v in sorted(running_breakdown.items())
+            )
+            print(f"Epoch {epoch + 1}/{self.config.num_epochs} — loss: {avg_loss:.4f} ({breakdown_str})")
 
             # Checkpoint
             if self.checkpoint_dir and (epoch + 1) % self.checkpoint_every == 0:
