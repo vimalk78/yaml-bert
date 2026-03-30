@@ -65,7 +65,8 @@ def suggest_missing_fields(
             keys_by_parent.setdefault(node.parent_path, set()).add(node.token)
             key_positions_by_parent.setdefault(node.parent_path, []).append(i)
 
-    # For each parent level, mask each key and collect predictions
+    # For each parent level, append a fake masked node as the "next sibling"
+    # and ask the model what key should go there. This probes for MISSING keys.
     model.eval()
     predicted_keys_by_parent: dict[str, dict[str, float]] = {}
 
@@ -74,6 +75,42 @@ def suggest_missing_fields(
     for parent_path, positions in key_positions_by_parent.items():
         predicted: dict[str, float] = {}
 
+        # Use the last key node at this level as a template for the fake node
+        last_pos: int = positions[-1]
+        last_node: YamlNode = nodes[last_pos]
+        next_sibling: int = min(last_node.sibling_index + 1, 31)
+
+        # Insert a fake [MASK] node after the last position at this level
+        # We append it to the end of the sequence
+        fake_token_ids: list[int] = token_ids + [mask_id]
+        fake_node_types: list[int] = node_types + [_NODE_TYPE_INDEX[last_node.node_type]]
+        fake_depths: list[int] = depths + [last_node.depth]
+        fake_siblings: list[int] = siblings + [next_sibling]
+        fake_parent_keys: list[int] = parent_keys + [
+            vocab.encode_key(Vocabulary.extract_parent_key(last_node.parent_path))
+        ]
+        fake_kind_ids: list[int] = kind_ids + [kind_id]
+
+        fake_pos: int = len(token_ids)  # the appended position
+
+        with torch.no_grad():
+            key_logits, _, _ = model(
+                t(fake_token_ids), t(fake_node_types), t(fake_depths),
+                t(fake_siblings), t(fake_parent_keys),
+                kind_ids=t(fake_kind_ids),
+            )
+
+        probs: torch.Tensor = F.softmax(key_logits[0, fake_pos], dim=-1)
+        topk = probs.topk(top_k)
+
+        for j in range(top_k):
+            key_name: str = vocab.decode_key(topk.indices[j].item())
+            prob: float = topk.values[j].item()
+            if key_name in ("[PAD]", "[UNK]", "[MASK]"):
+                continue
+            predicted[key_name] = prob
+
+        # Also mask each existing key to get runner-up predictions
         for pos in positions:
             masked_ids: list[int] = token_ids.copy()
             masked_ids[pos] = mask_id
@@ -84,12 +121,12 @@ def suggest_missing_fields(
                     kind_ids=t(kind_ids),
                 )
 
-            probs: torch.Tensor = F.softmax(key_logits[0, pos], dim=-1)
+            probs = F.softmax(key_logits[0, pos], dim=-1)
             topk = probs.topk(top_k)
 
             for j in range(top_k):
-                key_name: str = vocab.decode_key(topk.indices[j].item())
-                prob: float = topk.values[j].item()
+                key_name = vocab.decode_key(topk.indices[j].item())
+                prob = topk.values[j].item()
                 if key_name in ("[PAD]", "[UNK]", "[MASK]"):
                     continue
                 if key_name not in predicted or prob > predicted[key_name]:
