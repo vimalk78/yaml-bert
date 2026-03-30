@@ -140,8 +140,8 @@ class VocabBuilder:
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
         kind_set: set[str] = set()
-        simple_target_set: set[str] = set()
-        kind_target_set: set[str] = set()
+        simple_target_counts: dict[str, int] = {}
+        kind_target_counts: dict[str, int] = {}
 
         current_kind: str = ""
         prev_was_kind_key: bool = False
@@ -151,15 +151,19 @@ class VocabBuilder:
                 prev_was_kind_key = (node.token == "kind" and node.depth == 0)
                 target, head_type = compute_target(node, current_kind)
                 if head_type == "kind_specific":
-                    kind_target_set.add(target)
+                    kind_target_counts[target] = kind_target_counts.get(target, 0) + 1
                 else:
-                    simple_target_set.add(target)
+                    simple_target_counts[target] = simple_target_counts.get(target, 0) + 1
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
                 if prev_was_kind_key:
                     kind_set.add(node.token)
                     current_kind = node.token
                 prev_was_kind_key = False
+
+        # Filter target vocabs by min_freq
+        simple_target_set: set[str] = {t for t, c in simple_target_counts.items() if c >= min_freq}
+        kind_target_set: set[str] = {t for t, c in kind_target_counts.items() if c >= min_freq}
 
         return self.build_from_counts(
             key_counts, value_counts, min_freq, kind_set,
