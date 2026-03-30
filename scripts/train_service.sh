@@ -6,7 +6,7 @@
 set -e
 
 PROJECT_DIR="/home/vimal/src/AI-ML/yaml-bert"
-OUTPUT_DIR="${1:-$PROJECT_DIR/output_v3_full}"
+OUTPUT_DIR="${1:-$PROJECT_DIR/output_v4}"
 VENV="/home/vimal/src/AI-ML/venv-AI-ML/bin/activate"
 
 cd "$PROJECT_DIR"
@@ -21,7 +21,7 @@ fi
 # Find latest checkpoint
 LATEST_CHECKPOINT=""
 if [ -d "$OUTPUT_DIR/checkpoints" ]; then
-    LATEST_CHECKPOINT=$(ls -t "$OUTPUT_DIR/checkpoints"/yaml_bert_epoch_*.pt 2>/dev/null | head -1)
+    LATEST_CHECKPOINT=$(ls -t "$OUTPUT_DIR/checkpoints"/yaml_bert_v4_epoch_*.pt 2>/dev/null | head -1)
 fi
 
 RESUME_FLAG=""
@@ -32,13 +32,11 @@ else
     echo "$(date): Starting fresh training"
 fi
 
-python scripts/train_hf.py \
+python scripts/train_v4.py \
     --max-docs 0 \
-    --full \
     --epochs 15 \
     --vocab-min-freq 100 \
-    --alpha 0.1 \
-    --beta 0.1 \
+    --batch-size 16 \
     --output-dir "$OUTPUT_DIR" \
     $RESUME_FLAG
 
