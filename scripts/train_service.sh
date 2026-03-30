@@ -13,7 +13,7 @@ cd "$PROJECT_DIR"
 source "$VENV"
 
 # Check if training already completed
-if [ -f "$OUTPUT_DIR/checkpoints/yaml_bert_epoch_15.pt" ]; then
+if [ -f "$OUTPUT_DIR/checkpoints/yaml_bert_v4_epoch_15.pt" ]; then
     echo "Training already complete (epoch 15 checkpoint exists). Exiting."
     exit 0
 fi
@@ -36,7 +36,7 @@ python scripts/train_v4.py \
     --max-docs 0 \
     --epochs 15 \
     --vocab-min-freq 100 \
-    --batch-size 16 \
+    --batch-size 24 \
     --output-dir "$OUTPUT_DIR" \
     $RESUME_FLAG
 
