@@ -14,11 +14,10 @@ import torch
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.annotator import DomainAnnotator
-from yaml_bert.dataset import _extract_kind
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
-from yaml_bert.vocab import Vocabulary
+from yaml_bert.vocab import Vocabulary, UNIVERSAL_ROOT_KEYS
 from yaml_bert.types import NodeType
 import torch.nn.functional as F
 
@@ -26,12 +25,20 @@ import torch.nn.functional as F
 def load_model(checkpoint_path: str, vocab_path: str = "output_v1/vocab.json") -> tuple[YamlBertModel, Vocabulary]:
     vocab: Vocabulary = Vocabulary.load(vocab_path)
     config: YamlBertConfig = YamlBertConfig()
-    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
-    model = YamlBertModel(config=config, embedding=emb, key_vocab_size=vocab.key_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+
+    torch.manual_seed(42)
+    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size)
+    model = YamlBertModel(config=config, embedding=emb, simple_vocab_size=vocab.simple_target_vocab_size, kind_vocab_size=vocab.kind_target_vocab_size)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     return model, vocab
+
+
+def _extract_key_from_target(target: str) -> str:
+    """Extract the raw key name from a compound target."""
+    return target.rsplit("::", 1)[-1]
 
 
 def predict_masked_key(
@@ -48,7 +55,7 @@ def predict_masked_key(
     annotator.annotate(nodes)
 
     type_map = {NodeType.KEY: 0, NodeType.VALUE: 1, NodeType.LIST_KEY: 2, NodeType.LIST_VALUE: 3}
-    token_ids, node_types, depths, siblings, parent_keys = [], [], [], [], []
+    token_ids, node_types, depths, siblings = [], [], [], []
 
     for node in nodes:
         if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
@@ -58,30 +65,33 @@ def predict_masked_key(
         node_types.append(type_map[node.node_type])
         depths.append(min(node.depth, 15))
         siblings.append(min(node.sibling_index, 31))
-        parent_keys.append(vocab.encode_key(Vocabulary.extract_parent_key(node.parent_path)))
 
-    # Record original and mask
-    original_token: str = nodes[mask_position].token
     token_ids[mask_position] = vocab.special_tokens["[MASK]"]
 
-    kind: str = _extract_kind(nodes)
-    kind_id: int = vocab.encode_kind(kind)
-    kind_ids: list[int] = [kind_id] * len(nodes)
+    masked_node = nodes[mask_position]
+    parent_key = Vocabulary.extract_parent_key(masked_node.parent_path)
+    use_kind_head = (
+        masked_node.depth == 1
+        and parent_key not in UNIVERSAL_ROOT_KEYS
+        and parent_key != ""
+    )
 
     t = lambda x: torch.tensor([x])
     with torch.no_grad():
-        logits, _, _ = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids))
+        simple_logits, kind_logits = model(t(token_ids), t(node_types), t(depths), t(siblings))
+
+    if use_kind_head:
+        logits = kind_logits
+        id_to_target = {v: k for k, v in vocab.kind_target_vocab.items()}
+    else:
+        logits = simple_logits
+        id_to_target = {v: k for k, v in vocab.simple_target_vocab.items()}
+    for tok, tok_id in vocab.special_tokens.items():
+        id_to_target[tok_id] = tok
 
     probs = F.softmax(logits[0, mask_position], dim=-1)
     topk = probs.topk(k)
-
-    results: list[tuple[str, float]] = []
-    for i in range(k):
-        key_name: str = vocab.decode_key(topk.indices[i].item())
-        prob: float = topk.values[i].item()
-        results.append((key_name, prob))
-
-    return results
+    return [(_extract_key_from_target(id_to_target.get(topk.indices[i].item(), f"[ID:{topk.indices[i].item()}]")), topk.values[i].item()) for i in range(k)]
 
 
 def print_predictions(
@@ -128,6 +138,7 @@ def main() -> None:
     args = parser.parse_args()
 
     model, vocab = load_model(args.checkpoint, args.vocab)
+    print(f"Model loaded.\n")
     total_tests: int = 0
     passed_tests: int = 0
 

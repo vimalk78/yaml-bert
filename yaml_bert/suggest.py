@@ -10,7 +10,7 @@ from yaml_bert.dataset import _extract_kind
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
 from yaml_bert.types import NodeType, YamlNode
-from yaml_bert.vocab import Vocabulary
+from yaml_bert.vocab import Vocabulary, compute_target
 
 
 # Keys managed by the cluster, not written by users
@@ -36,6 +36,10 @@ def suggest_missing_fields(
 ) -> list[dict[str, Any]]:
     """Suggest missing fields in a YAML document based on model conventions.
 
+    Uses the dual-head (simple + kind-specific) prediction approach.
+    For each parent level, a fake [MASK] node is appended and both heads
+    are consulted based on which head would apply at that tree position.
+
     Args:
         model: Trained YAML-BERT model
         vocab: Vocabulary
@@ -54,13 +58,15 @@ def suggest_missing_fields(
         return []
     annotator.annotate(nodes)
 
-    token_ids, node_types, depths, siblings, parent_keys = _encode_nodes(nodes, vocab)
+    token_ids, node_types, depths, siblings = _encode_nodes(nodes, vocab)
 
     kind: str = _extract_kind(nodes)
-    kind_id: int = vocab.encode_kind(kind)
-    kind_ids: list[int] = [kind_id] * len(nodes)
-
     mask_id: int = vocab.special_tokens["[MASK]"]
+
+    # Build reverse lookups for decoding predictions
+    id_to_simple: dict[int, str] = {v: k for k, v in vocab.simple_target_vocab.items()}
+    id_to_kind: dict[int, str] = {v: k for k, v in vocab.kind_target_vocab.items()}
+    id_to_special: dict[int, str] = {v: k for k, v in vocab.special_tokens.items()}
 
     # Group key nodes by parent_path
     keys_by_parent: dict[str, set[str]] = {}
@@ -99,25 +105,48 @@ def suggest_missing_fields(
         fake_node_types: list[int] = node_types + [_NODE_TYPE_INDEX[last_node.node_type]]
         fake_depths: list[int] = depths + [last_node.depth]
         fake_siblings: list[int] = siblings + [next_sibling]
-        fake_parent_keys: list[int] = parent_keys + [
-            vocab.encode_key(Vocabulary.extract_parent_key(last_node.parent_path))
-        ]
-        fake_kind_ids: list[int] = kind_ids + [kind_id]
         fake_pos: int = len(token_ids)
 
+        # Determine which head applies for this position using compute_target logic.
+        # Create a fake YamlNode to probe which head to use.
+        fake_node = YamlNode(
+            token="__probe__",
+            node_type=last_node.node_type,
+            depth=last_node.depth,
+            sibling_index=next_sibling,
+            parent_path=last_node.parent_path,
+        )
+        _, head_type = compute_target(fake_node, kind)
+
         with torch.no_grad():
-            key_logits, _, _ = model(
+            simple_logits, kind_logits = model(
                 t(fake_token_ids), t(fake_node_types), t(fake_depths),
-                t(fake_siblings), t(fake_parent_keys),
-                kind_ids=t(fake_kind_ids),
+                t(fake_siblings),
             )
 
-        probs: torch.Tensor = F.softmax(key_logits[0, fake_pos], dim=-1)
+        if head_type == "simple":
+            probs: torch.Tensor = F.softmax(simple_logits[0, fake_pos], dim=-1)
+            id_to_target = id_to_simple
+        else:
+            probs = F.softmax(kind_logits[0, fake_pos], dim=-1)
+            id_to_target = id_to_kind
+
         topk = probs.topk(top_k + 5)
 
         for j in range(topk.indices.shape[0]):
-            key_name: str = vocab.decode_key(topk.indices[j].item())
+            target_id: int = topk.indices[j].item()
             prob: float = topk.values[j].item()
+
+            # Decode target string
+            if target_id in id_to_special:
+                target_name: str = id_to_special[target_id]
+            else:
+                target_name = id_to_target.get(target_id, "[UNK]")
+
+            # Extract the raw key name from composite target strings
+            # Simple targets: "parent::key" or just "key"
+            # Kind targets: "Kind::parent::key"
+            key_name: str = target_name.split("::")[-1] if "::" in target_name else target_name
 
             # Skip special tokens
             if key_name in ("[PAD]", "[UNK]", "[MASK]"):
@@ -155,13 +184,12 @@ def suggest_missing_fields(
 def _encode_nodes(
     nodes: list[YamlNode],
     vocab: Vocabulary,
-) -> tuple[list[int], list[int], list[int], list[int], list[int]]:
+) -> tuple[list[int], list[int], list[int], list[int]]:
     """Encode nodes to integer lists for model input."""
     token_ids: list[int] = []
     node_types: list[int] = []
     depths: list[int] = []
     siblings: list[int] = []
-    parent_keys: list[int] = []
 
     for node in nodes:
         if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
@@ -171,6 +199,5 @@ def _encode_nodes(
         node_types.append(_NODE_TYPE_INDEX[node.node_type])
         depths.append(min(node.depth, 15))
         siblings.append(min(node.sibling_index, 31))
-        parent_keys.append(vocab.encode_key(Vocabulary.extract_parent_key(node.parent_path)))
 
-    return token_ids, node_types, depths, siblings, parent_keys
+    return token_ids, node_types, depths, siblings

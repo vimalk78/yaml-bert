@@ -9,7 +9,6 @@ from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
 from yaml_bert.dataset import YamlDataset, collate_fn
 from yaml_bert.trainer import YamlBertTrainer
-from yaml_bert.evaluate import YamlBertEvaluator
 
 __all__ = [
     "YamlBertConfig",
@@ -24,5 +23,4 @@ __all__ = [
     "YamlDataset",
     "collate_fn",
     "YamlBertTrainer",
-    "YamlBertEvaluator",
 ]

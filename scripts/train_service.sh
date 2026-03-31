@@ -32,7 +32,7 @@ else
     echo "$(date): Starting fresh training"
 fi
 
-python scripts/train_v4.py \
+python scripts/train.py \
     --max-docs 0 \
     --epochs 15 \
     --vocab-min-freq 100 \

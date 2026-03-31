@@ -4,188 +4,80 @@ from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
 
 
-TEST_CONFIG: YamlBertConfig = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
-KEY_VOCAB_SIZE: int = 100
-VALUE_VOCAB_SIZE: int = 200
+TEST_CONFIG = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
+SIMPLE_VOCAB = 100
+KIND_VOCAB = 30
 
 
-def _make_model() -> YamlBertModel:
+def _make_model():
     emb = YamlBertEmbedding(
-        config=TEST_CONFIG,
-        key_vocab_size=KEY_VOCAB_SIZE,
-        value_vocab_size=VALUE_VOCAB_SIZE,
+        config=TEST_CONFIG, key_vocab_size=50, value_vocab_size=80,
     )
     return YamlBertModel(
-        config=TEST_CONFIG,
-        embedding=emb,
-        key_vocab_size=KEY_VOCAB_SIZE,
+        config=TEST_CONFIG, embedding=emb,
+        simple_vocab_size=SIMPLE_VOCAB, kind_vocab_size=KIND_VOCAB,
     )
 
 
-def test_model_output_shape():
+def test_v4_output_shapes():
     model = _make_model()
+    batch, seq = 2, 8
+    token_ids = torch.randint(0, 30, (batch, seq))
+    node_types = torch.zeros(batch, seq, dtype=torch.long)
+    depths = torch.randint(0, 5, (batch, seq))
+    siblings = torch.randint(0, 3, (batch, seq))
 
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
+    simple_logits, kind_logits = model(token_ids, node_types, depths, siblings)
 
-    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
-
-    assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
+    assert simple_logits.shape == (batch, seq, SIMPLE_VOCAB)
+    assert kind_logits.shape == (batch, seq, KIND_VOCAB)
 
 
-def test_model_with_padding_mask():
+def test_v4_with_padding_mask():
     model = _make_model()
+    batch, seq = 2, 8
+    token_ids = torch.randint(0, 30, (batch, seq))
+    node_types = torch.zeros(batch, seq, dtype=torch.long)
+    depths = torch.randint(0, 5, (batch, seq))
+    siblings = torch.randint(0, 3, (batch, seq))
+    mask = torch.tensor([[False]*8, [False]*5 + [True]*3])
 
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
-
-    padding_mask = torch.tensor([
-        [False, False, False, False, False],
-        [False, False, False, True, True],
-    ])
-
-    key_logits, _, _ = model(
-        token_ids, node_types, depths, siblings, parent_keys,
-        padding_mask=padding_mask,
-    )
-
-    assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
+    simple_logits, kind_logits = model(token_ids, node_types, depths, siblings, padding_mask=mask)
+    assert simple_logits.shape == (batch, seq, SIMPLE_VOCAB)
 
 
-def test_model_loss_computation():
+def test_v4_loss():
     model = _make_model()
+    batch, seq = 2, 8
+    token_ids = torch.randint(0, 30, (batch, seq))
+    node_types = torch.zeros(batch, seq, dtype=torch.long)
+    depths = torch.randint(0, 5, (batch, seq))
+    siblings = torch.randint(0, 3, (batch, seq))
 
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
+    simple_logits, kind_logits = model(token_ids, node_types, depths, siblings)
 
-    labels = torch.full((batch_size, seq_len), -100, dtype=torch.long)
-    labels[0, 1] = 10
-    labels[1, 0] = 20
+    # simple_labels: some masked, rest -100
+    simple_labels = torch.full((batch, seq), -100, dtype=torch.long)
+    simple_labels[0, 1] = 10
+    simple_labels[1, 3] = 20
 
-    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
-    loss, breakdown = model.compute_loss(key_logits, labels)
+    # kind_labels: some masked, rest -100
+    kind_labels = torch.full((batch, seq), -100, dtype=torch.long)
+    kind_labels[0, 4] = 5
+
+    loss, breakdown = model.compute_loss(simple_logits, simple_labels, kind_logits, kind_labels)
 
     assert loss.dim() == 0
-    assert "key" in breakdown
     assert loss.item() > 0
     assert loss.requires_grad
-
-
-def test_model_with_kind_ids():
-    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
-    emb = YamlBertEmbedding(
-        config=config, key_vocab_size=100, value_vocab_size=200, kind_vocab_size=10,
-    )
-    model = YamlBertModel(config=config, embedding=emb, key_vocab_size=100)
-
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
-    kind_ids = torch.tensor([[1, 1, 1, 1, 1], [2, 2, 2, 2, 2]])
-
-    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids)
-    assert key_logits.shape == (batch_size, seq_len, 100)
-
-
-def test_model_without_kind_ids_backward_compatible():
-    model = _make_model()
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
-
-    key_logits, _, _ = model(token_ids, node_types, depths, siblings, parent_keys)
-    assert key_logits.shape == (batch_size, seq_len, KEY_VOCAB_SIZE)
-
-
-def test_model_returns_auxiliary_logits():
-    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
-    emb = YamlBertEmbedding(
-        config=config, key_vocab_size=100, value_vocab_size=200, kind_vocab_size=10,
-    )
-    model = YamlBertModel(
-        config=config, embedding=emb, key_vocab_size=100, kind_vocab_size=10,
-    )
-
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
-    kind_ids = torch.ones(batch_size, seq_len, dtype=torch.long)
-
-    key_logits, kind_logits, parent_logits = model(
-        token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids,
-    )
-
-    assert key_logits.shape == (batch_size, seq_len, 100)
-    assert kind_logits.shape == (batch_size, seq_len, 10)
-    assert parent_logits.shape == (batch_size, seq_len, 100)
-
-
-def test_model_auxiliary_loss():
-    config = YamlBertConfig(d_model=64, num_layers=2, num_heads=2)
-    emb = YamlBertEmbedding(
-        config=config, key_vocab_size=100, value_vocab_size=200, kind_vocab_size=10,
-    )
-    model = YamlBertModel(
-        config=config, embedding=emb, key_vocab_size=100, kind_vocab_size=10,
-    )
-
-    batch_size = 2
-    seq_len = 5
-    token_ids = torch.randint(0, 50, (batch_size, seq_len))
-    node_types = torch.zeros(batch_size, seq_len, dtype=torch.long)
-    depths = torch.randint(0, 5, (batch_size, seq_len))
-    siblings = torch.randint(0, 3, (batch_size, seq_len))
-    parent_keys = torch.randint(0, 50, (batch_size, seq_len))
-    kind_ids = torch.ones(batch_size, seq_len, dtype=torch.long)
-
-    labels = torch.full((batch_size, seq_len), -100, dtype=torch.long)
-    labels[0, 1] = 10
-
-    key_logits, kind_logits, parent_logits = model(
-        token_ids, node_types, depths, siblings, parent_keys, kind_ids=kind_ids,
-    )
-
-    loss, breakdown = model.compute_loss(
-        key_logits=key_logits,
-        labels=labels,
-        kind_logits=kind_logits,
-        kind_labels=kind_ids,
-        parent_logits=parent_logits,
-        parent_labels=parent_keys,
-        alpha=0.1,
-        beta=0.1,
-    )
-
-    assert loss.dim() == 0
-    assert "key" in breakdown
+    assert "simple" in breakdown
     assert "kind" in breakdown
-    assert "parent" in breakdown
-    assert loss.item() > 0
-    assert loss.requires_grad
+
+
+def test_v4_no_kind_ids_needed():
+    """v4 forward doesn't accept kind_ids — not in the architecture."""
+    model = _make_model()
+    import inspect
+    sig = inspect.signature(model.forward)
+    assert "kind_ids" not in sig.parameters
+    assert "parent_key_ids" not in sig.parameters

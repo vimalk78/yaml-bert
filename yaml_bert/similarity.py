@@ -6,7 +6,6 @@ import torch
 import torch.nn.functional as F
 
 from yaml_bert.annotator import DomainAnnotator
-from yaml_bert.dataset import _extract_kind
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
 from yaml_bert.pooling import DocumentPooling
@@ -39,7 +38,6 @@ def extract_hidden_states(
     node_types: list[int] = []
     depths: list[int] = []
     siblings: list[int] = []
-    parent_keys: list[int] = []
     kind_pos: int = -1
 
     for i, node in enumerate(nodes):
@@ -50,21 +48,15 @@ def extract_hidden_states(
         node_types.append(_NODE_TYPE_INDEX[node.node_type])
         depths.append(min(node.depth, 15))
         siblings.append(min(node.sibling_index, 31))
-        parent_keys.append(vocab.encode_key(Vocabulary.extract_parent_key(node.parent_path)))
 
         if node.token == "kind" and node.depth == 0 and node.node_type == NodeType.KEY and kind_pos == -1:
             kind_pos = i
-
-    kind: str = _extract_kind(nodes)
-    kind_id: int = vocab.encode_kind(kind)
-    kind_ids: list[int] = [kind_id] * len(nodes)
 
     t = lambda x: torch.tensor([x])
     model.eval()
 
     x: torch.Tensor = model.embedding(
-        t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys),
-        kind_ids=t(kind_ids),
+        t(token_ids), t(node_types), t(depths), t(siblings),
     )
     for layer in model.encoder.layers:
         x = layer(x)

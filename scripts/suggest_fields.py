@@ -1,10 +1,10 @@
 """Suggest missing fields in Kubernetes YAML using YAML-BERT conventions.
 
 Usage:
-    python scripts/suggest_fields.py output_v1/yaml_bert_v1_final.pt --yaml-file my-deployment.yaml
-    python scripts/suggest_fields.py output_v1/yaml_bert_v1_final.pt --yaml-file my-pod.yaml --threshold 0.5
-    python scripts/suggest_fields.py output_v1/yaml_bert_v1_final.pt --yaml-dir ./manifests/
-    python scripts/suggest_fields.py output_v1/yaml_bert_v1_final.pt --yaml-file my-pod.yaml --format json
+    python scripts/suggest_fields.py output_v4/yaml_bert_final.pt --yaml-file my-deployment.yaml
+    python scripts/suggest_fields.py output_v4/yaml_bert_final.pt --yaml-file my-pod.yaml --threshold 0.5
+    python scripts/suggest_fields.py output_v4/yaml_bert_final.pt --yaml-dir ./manifests/
+    python scripts/suggest_fields.py output_v4/yaml_bert_final.pt --yaml-file my-pod.yaml --format json
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -37,27 +37,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_model(checkpoint_path: str, vocab_path: str, device: str) -> tuple[YamlBertModel, Vocabulary]:
-    # Fixed seed before model creation so randomly-initialized layers
-    # (kind_classifier, parent_key_classifier) get consistent weights
-    # when loading v1 checkpoints with strict=False
-    import torch
-    torch.manual_seed(42)
-
     vocab: Vocabulary = Vocabulary.load(vocab_path)
     config: YamlBertConfig = YamlBertConfig()
     emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
-        kind_vocab_size=vocab.kind_vocab_size,
     )
     model = YamlBertModel(
         config=config, embedding=emb,
-        key_vocab_size=vocab.key_vocab_size,
-        kind_vocab_size=vocab.kind_vocab_size,
+        simple_vocab_size=vocab.simple_target_vocab_size,
+        kind_vocab_size=vocab.kind_target_vocab_size,
     )
     checkpoint: dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
     return model, vocab

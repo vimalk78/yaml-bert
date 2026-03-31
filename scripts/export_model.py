@@ -3,8 +3,8 @@
 Strips optimizer state, adds config metadata.
 
 Usage:
-    python scripts/export_model.py output_v1/checkpoints/yaml_bert_epoch_15.pt
-    python scripts/export_model.py output_v1/checkpoints/yaml_bert_epoch_15.pt --output output_v1/yaml_bert_v1_final.pt
+    python scripts/export_model.py output_v4/checkpoints/yaml_bert_v4_epoch_15.pt
+    python scripts/export_model.py output_v4/checkpoints/yaml_bert_v4_epoch_15.pt --output output_v4/yaml_bert_final.pt
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401

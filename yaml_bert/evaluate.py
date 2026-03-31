@@ -23,55 +23,89 @@ class YamlBertEvaluator:
         self.dataset: YamlDataset = dataset
         self.vocab: Vocabulary = vocab
         self.device: torch.device = next(model.parameters()).device
+        self._id_to_simple: dict[int, str] = {
+            v: k for k, v in vocab.simple_target_vocab.items()
+        }
+        self._id_to_kind: dict[int, str] = {
+            v: k for k, v in vocab.kind_target_vocab.items()
+        }
+
+    def _decode_simple(self, id: int) -> str:
+        if id in self.vocab._id_to_special:
+            return self.vocab._id_to_special[id]
+        return self._id_to_simple.get(id, "[UNK]")
+
+    def _decode_kind(self, id: int) -> str:
+        if id in self.vocab._id_to_special:
+            return self.vocab._id_to_special[id]
+        return self._id_to_kind.get(id, "[UNK]")
 
     @torch.no_grad()
     def evaluate_prediction_accuracy(self) -> dict[str, float]:
-        """Compute top-1 and top-5 masked key prediction accuracy over the dataset."""
+        """Compute top-1 and top-5 masked key prediction accuracy over the dataset.
+
+        Evaluates both simple and kind-specific heads independently.
+        """
         self.model.eval()
 
-        total_masked: int = 0
-        top1_correct: int = 0
-        top5_correct: int = 0
+        simple_total: int = 0
+        simple_top1: int = 0
+        simple_top5: int = 0
+        kind_total: int = 0
+        kind_top1: int = 0
+        kind_top5: int = 0
 
         for idx in range(len(self.dataset)):
             item: dict[str, torch.Tensor] = self.dataset[idx]
-            labels: torch.Tensor = item["labels"]
+            simple_labels: torch.Tensor = item["simple_labels"]
+            kind_labels: torch.Tensor = item["kind_labels"]
 
-            masked_positions: torch.Tensor = labels != -100
-            if not masked_positions.any():
+            simple_masked: torch.Tensor = simple_labels != -100
+            kind_masked: torch.Tensor = kind_labels != -100
+            if not simple_masked.any() and not kind_masked.any():
                 continue
 
-            batch: dict[str, torch.Tensor] = {
-                k: v.unsqueeze(0).to(self.device) for k, v in item.items()
-            }
-
-            kind_ids_tensor = item["kind_ids"].unsqueeze(0).to(self.device) if "kind_ids" in item else None
-
-            key_logits, _, _ = self.model(
-                token_ids=batch["token_ids"],
-                node_types=batch["node_types"],
-                depths=batch["depths"],
-                sibling_indices=batch["sibling_indices"],
-                parent_key_ids=batch["parent_key_ids"],
-                kind_ids=kind_ids_tensor,
+            simple_logits, kind_logits = self.model(
+                token_ids=item["token_ids"].unsqueeze(0).to(self.device),
+                node_types=item["node_types"].unsqueeze(0).to(self.device),
+                depths=item["depths"].unsqueeze(0).to(self.device),
+                sibling_indices=item["sibling_indices"].unsqueeze(0).to(self.device),
             )
 
-            logits: torch.Tensor = key_logits[0]
-            for pos in masked_positions.nonzero(as_tuple=True)[0]:
-                true_id: int = labels[pos].item()
-                pos_logits: torch.Tensor = logits[pos]
+            s_logits: torch.Tensor = simple_logits[0]
+            for pos in simple_masked.nonzero(as_tuple=True)[0]:
+                true_id: int = simple_labels[pos].item()
+                pos_logits: torch.Tensor = s_logits[pos]
                 top5_ids: torch.Tensor = pos_logits.topk(5).indices
 
                 if top5_ids[0].item() == true_id:
-                    top1_correct += 1
+                    simple_top1 += 1
                 if true_id in top5_ids.tolist():
-                    top5_correct += 1
-                total_masked += 1
+                    simple_top5 += 1
+                simple_total += 1
+
+            k_logits: torch.Tensor = kind_logits[0]
+            for pos in kind_masked.nonzero(as_tuple=True)[0]:
+                true_id = kind_labels[pos].item()
+                pos_logits = k_logits[pos]
+                top5_ids = pos_logits.topk(5).indices
+
+                if top5_ids[0].item() == true_id:
+                    kind_top1 += 1
+                if true_id in top5_ids.tolist():
+                    kind_top5 += 1
+                kind_total += 1
+
+        total_masked: int = simple_total + kind_total
+        total_top1: int = simple_top1 + kind_top1
+        total_top5: int = simple_top5 + kind_top5
 
         return {
-            "top1_accuracy": top1_correct / max(total_masked, 1),
-            "top5_accuracy": top5_correct / max(total_masked, 1),
+            "top1_accuracy": total_top1 / max(total_masked, 1),
+            "top5_accuracy": total_top5 / max(total_masked, 1),
             "total_masked": total_masked,
+            "simple_top1_accuracy": simple_top1 / max(simple_total, 1),
+            "kind_top1_accuracy": kind_top1 / max(kind_total, 1),
         }
 
     @torch.no_grad()
@@ -83,13 +117,13 @@ class YamlBertEvaluator:
         test_pairs: list[dict[str, Any]] = [
             {
                 "key": "spec",
-                "position_a": {"depth": 0, "parent_key": ""},
-                "position_b": {"depth": 2, "parent_key": "template"},
+                "position_a": {"depth": 0},
+                "position_b": {"depth": 2},
             },
             {
                 "key": "name",
-                "position_a": {"depth": 1, "parent_key": "metadata"},
-                "position_b": {"depth": 1, "parent_key": "containers"},
+                "position_a": {"depth": 1},
+                "position_b": {"depth": 1},
             },
         ]
 
@@ -109,18 +143,9 @@ class YamlBertEvaluator:
             siblings: torch.Tensor = torch.tensor(
                 [[0, 0]], device=self.device
             )
-            parent_a_id: int = self.vocab.encode_key(
-                pair["position_a"]["parent_key"]
-            )
-            parent_b_id: int = self.vocab.encode_key(
-                pair["position_b"]["parent_key"]
-            )
-            parent_keys: torch.Tensor = torch.tensor(
-                [[parent_a_id, parent_b_id]], device=self.device
-            )
 
             embeddings: torch.Tensor = self.model.embedding(
-                token_ids, node_types, depths, siblings, parent_keys
+                token_ids, node_types, depths, siblings
             )
 
             cosine_sim: float = F.cosine_similarity(
@@ -141,43 +166,41 @@ class YamlBertEvaluator:
     def top_k_predictions(
         self, doc_idx: int, k: int = 5
     ) -> list[dict[str, Any]]:
-        """Show top-k predicted keys for each masked position in a document."""
+        """Show top-k predicted keys for each masked position in a document.
+
+        Reports predictions from both the simple and kind-specific heads.
+        """
         self.model.eval()
 
         item: dict[str, torch.Tensor] = self.dataset[doc_idx]
-        labels: torch.Tensor = item["labels"]
+        simple_labels: torch.Tensor = item["simple_labels"]
+        kind_labels: torch.Tensor = item["kind_labels"]
 
-        masked_positions: torch.Tensor = labels != -100
-        if not masked_positions.any():
+        simple_masked: torch.Tensor = simple_labels != -100
+        kind_masked: torch.Tensor = kind_labels != -100
+        if not simple_masked.any() and not kind_masked.any():
             return []
 
-        batch: dict[str, torch.Tensor] = {
-            k_: v.unsqueeze(0).to(self.device) for k_, v in item.items()
-        }
-
-        kind_ids_tensor = item["kind_ids"].unsqueeze(0).to(self.device) if "kind_ids" in item else None
-
-        key_logits, _, _ = self.model(
-            token_ids=batch["token_ids"],
-            node_types=batch["node_types"],
-            depths=batch["depths"],
-            sibling_indices=batch["sibling_indices"],
-            parent_key_ids=batch["parent_key_ids"],
-            kind_ids=kind_ids_tensor,
+        simple_logits, kind_logits = self.model(
+            token_ids=item["token_ids"].unsqueeze(0).to(self.device),
+            node_types=item["node_types"].unsqueeze(0).to(self.device),
+            depths=item["depths"].unsqueeze(0).to(self.device),
+            sibling_indices=item["sibling_indices"].unsqueeze(0).to(self.device),
         )
 
-        logits: torch.Tensor = key_logits[0]
         predictions: list[dict[str, Any]] = []
 
-        for pos in masked_positions.nonzero(as_tuple=True)[0]:
-            true_id: int = labels[pos].item()
-            pos_logits: torch.Tensor = logits[pos]
+        # Simple head predictions
+        s_logits: torch.Tensor = simple_logits[0]
+        for pos in simple_masked.nonzero(as_tuple=True)[0]:
+            true_id: int = simple_labels[pos].item()
+            pos_logits: torch.Tensor = s_logits[pos]
             probs: torch.Tensor = F.softmax(pos_logits, dim=-1)
             topk: torch.return_types.topk = probs.topk(k)
 
             predicted_keys: list[dict[str, Any]] = [
                 {
-                    "key": self.vocab.decode_key(topk.indices[i].item()),
+                    "key": self._decode_simple(topk.indices[i].item()),
                     "probability": topk.values[i].item(),
                 }
                 for i in range(k)
@@ -185,8 +208,33 @@ class YamlBertEvaluator:
 
             predictions.append({
                 "position": pos.item(),
-                "true_key": self.vocab.decode_key(true_id),
+                "head": "simple",
+                "true_key": self._decode_simple(true_id),
                 "predicted_keys": predicted_keys,
             })
 
+        # Kind-specific head predictions
+        k_logits: torch.Tensor = kind_logits[0]
+        for pos in kind_masked.nonzero(as_tuple=True)[0]:
+            true_id = kind_labels[pos].item()
+            pos_logits = k_logits[pos]
+            probs = F.softmax(pos_logits, dim=-1)
+            topk = probs.topk(k)
+
+            predicted_keys = [
+                {
+                    "key": self._decode_kind(topk.indices[i].item()),
+                    "probability": topk.values[i].item(),
+                }
+                for i in range(k)
+            ]
+
+            predictions.append({
+                "position": pos.item(),
+                "head": "kind",
+                "true_key": self._decode_kind(true_id),
+                "predicted_keys": predicted_keys,
+            })
+
+        predictions.sort(key=lambda p: p["position"])
         return predictions

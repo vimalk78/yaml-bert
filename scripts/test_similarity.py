@@ -1,10 +1,10 @@
-"""Test v4 document embedding similarity.
+"""Test document embedding similarity.
 
 Compare cosine similarity across different resource types.
 Target: < 0.7 (vs v1's 0.84-0.92).
 
 Usage:
-    PYTHONPATH=. python scripts/test_v4_similarity.py output_v4_quick/checkpoints/yaml_bert_v4_epoch_10.pt --vocab output_v4_quick/vocab.json
+    PYTHONPATH=. python scripts/test_similarity.py output_v4_quick/checkpoints/yaml_bert_v4_epoch_10.pt --vocab output_v4_quick/vocab.json
 """
 from __future__ import annotations
 import _setup_path  # noqa: F401
@@ -15,8 +15,8 @@ import torch
 import torch.nn.functional as F
 
 from yaml_bert.config import YamlBertConfig
-from yaml_bert.embedding import YamlBertEmbeddingV4
-from yaml_bert.model import YamlBertModelV4
+from yaml_bert.embedding import YamlBertEmbedding
+from yaml_bert.model import YamlBertModel
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.vocab import Vocabulary
@@ -71,12 +71,12 @@ def main() -> None:
     torch.manual_seed(42)
     vocab: Vocabulary = Vocabulary.load(args.vocab)
     config: YamlBertConfig = YamlBertConfig()
-    emb = YamlBertEmbeddingV4(
+    emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
     )
-    model = YamlBertModelV4(
+    model = YamlBertModel(
         config=config, embedding=emb,
         simple_vocab_size=vocab.simple_target_vocab_size,
         kind_vocab_size=vocab.kind_target_vocab_size,
@@ -119,7 +119,7 @@ def main() -> None:
     normed: torch.Tensor = F.normalize(stacked, dim=1)
     sim: torch.Tensor = normed @ normed.T
 
-    print("\nPairwise cosine similarity (v4 model):")
+    print("\nPairwise cosine similarity:")
     print(f"{'':>12}", end="")
     for l in labels:
         print(f"{l:>12}", end="")

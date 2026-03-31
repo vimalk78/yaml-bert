@@ -20,11 +20,10 @@ import torch.nn.functional as F
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.annotator import DomainAnnotator
-from yaml_bert.dataset import _extract_kind
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.model import YamlBertModel
-from yaml_bert.vocab import Vocabulary
+from yaml_bert.vocab import Vocabulary, UNIVERSAL_ROOT_KEYS
 from yaml_bert.types import NodeType
 
 
@@ -2677,6 +2676,16 @@ spec:
     return capabilities
 
 
+def _extract_key_from_target(target: str) -> str:
+    """Extract the raw key name from a compound target.
+
+    'spec::replicas' -> 'replicas'
+    'Deployment::spec::replicas' -> 'replicas'
+    'apiVersion' -> 'apiVersion'
+    """
+    return target.rsplit("::", 1)[-1]
+
+
 def run_test(
     model: YamlBertModel,
     vocab: Vocabulary,
@@ -2693,7 +2702,7 @@ def run_test(
     annotator.annotate(nodes)
 
     type_map = {NodeType.KEY: 0, NodeType.VALUE: 1, NodeType.LIST_KEY: 2, NodeType.LIST_VALUE: 3}
-    token_ids, node_types, depths, siblings, parent_keys = [], [], [], [], []
+    token_ids, node_types, depths, siblings = [], [], [], []
     mask_pos: int = -1
 
     for i, node in enumerate(nodes):
@@ -2704,7 +2713,6 @@ def run_test(
         node_types.append(type_map[node.node_type])
         depths.append(min(node.depth, 15))
         siblings.append(min(node.sibling_index, 31))
-        parent_keys.append(vocab.encode_key(Vocabulary.extract_parent_key(node.parent_path)))
 
         if node.token == test.mask_token and mask_pos == -1:
             mask_pos = i
@@ -2712,24 +2720,50 @@ def run_test(
     if mask_pos == -1:
         return TestResult(test.name, False, f"Token '{test.mask_token}' not found", [])
 
-    token_ids[mask_pos] = vocab.special_tokens["[MASK]"]
+    # Determine which head to use based on masked node's position
+    masked_node = nodes[mask_pos]
+    parent_key: str = Vocabulary.extract_parent_key(masked_node.parent_path)
+    use_kind_head: bool = (
+        masked_node.depth == 1
+        and parent_key not in UNIVERSAL_ROOT_KEYS
+        and parent_key != ""
+    )
 
-    kind: str = _extract_kind(nodes)
-    kind_id: int = vocab.encode_kind(kind)
-    kind_ids: list[int] = [kind_id] * len(nodes)
+    token_ids[mask_pos] = vocab.special_tokens["[MASK]"]
 
     t = lambda x: torch.tensor([x])
     with torch.no_grad():
-        logits, _, _ = model(t(token_ids), t(node_types), t(depths), t(siblings), t(parent_keys), kind_ids=t(kind_ids))
+        simple_logits, kind_logits = model(t(token_ids), t(node_types), t(depths), t(siblings))
+
+    # Build reverse vocab for decoding
+    if use_kind_head:
+        logits = kind_logits
+        id_to_target = {v: k for k, v in vocab.kind_target_vocab.items()}
+    else:
+        logits = simple_logits
+        id_to_target = {v: k for k, v in vocab.simple_target_vocab.items()}
+
+    # Add special tokens to reverse map
+    for tok, tok_id in vocab.special_tokens.items():
+        id_to_target[tok_id] = tok
 
     probs = F.softmax(logits[0, mask_pos], dim=-1)
     topk = probs.topk(10)
-    predictions: list[tuple[str, float]] = [
-        (vocab.decode_key(topk.indices[i].item()), topk.values[i].item())
-        for i in range(10)
-    ]
+    predictions: list[tuple[str, float]] = []
+    for i in range(10):
+        idx = topk.indices[i].item()
+        target_str = id_to_target.get(idx, f"[ID:{idx}]")
+        key_name = _extract_key_from_target(target_str)
+        predictions.append((key_name, topk.values[i].item()))
 
-    # Check assertions
+    return _check_assertions(test, predictions)
+
+
+def _check_assertions(
+    test: TestCase,
+    predictions: list[tuple[str, float]],
+) -> TestResult:
+    """Check test assertions against predictions."""
     top5_keys: list[str] = [k for k, _ in predictions[:5]]
     top1_key: str = predictions[0][0]
     top1_conf: float = predictions[0][1]
@@ -2777,10 +2811,13 @@ def main() -> None:
 
     vocab: Vocabulary = Vocabulary.load(args.vocab)
     config: YamlBertConfig = YamlBertConfig()
-    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
-    model = YamlBertModel(config=config, embedding=emb, key_vocab_size=vocab.key_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+
+    torch.manual_seed(42)
+    emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size, value_vocab_size=vocab.value_vocab_size)
+    model = YamlBertModel(config=config, embedding=emb, simple_vocab_size=vocab.simple_target_vocab_size, kind_vocab_size=vocab.kind_target_vocab_size)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
     print(f"YAML-BERT Capability Tests — Epoch {checkpoint['epoch']}")
