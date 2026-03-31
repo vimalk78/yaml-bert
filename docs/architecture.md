@@ -255,12 +255,12 @@ Standard transformer encoder, 6 layers, 8 attention heads:
 ```mermaid
 graph TD
     subgraph "Transformer Encoder (×6 layers)"
-        IN["Input Embeddings\nbatch, seq_len, 256"]
-        SA["Multi-Head Self-Attention\n8 heads x 32 dims"]
+        IN["Input Embeddings: batch, seq_len, 256"]
+        SA["Multi-Head Self-Attention: 8 heads x 32 dims"]
         ADD1["Add & Norm"]
-        FF["Feed-Forward Network\n256 → 1024 → 256"]
+        FF["Feed-Forward Network: 256 → 1024 → 256"]
         ADD2["Add & Norm"]
-        OUT["Layer Output\nbatch, seq_len, 256"]
+        OUT["Layer Output: batch, seq_len, 256"]
 
         IN --> SA
         SA --> ADD1
@@ -297,18 +297,18 @@ The transformer output feeds into two independent linear layers:
 
 ```mermaid
 graph TD
-    ENC["Encoder Output\nbatch, seq_len, 256"]
+    ENC["Encoder Output: batch, seq_len, 256"]
 
-    ENC --> SH["Structure Head\nLinear 256 → simple_vocab"]
-    ENC --> KH["Kind Head\nLinear 256 → kind_vocab"]
+    ENC --> SH["Structure Head: Linear 256 → structure_vocab"]
+    ENC --> KH["Kind Head: Linear 256 → kind_vocab"]
 
-    SH --> SL["Simple Logits"]
+    SH --> SL["Structure Logits"]
     KH --> KL["Kind Logits"]
 
     SL --> LOSS1["CrossEntropy Loss"]
     KL --> LOSS2["CrossEntropy Loss"]
 
-    LOSS1 --> TOTAL["Total Loss = simple_loss + kind_loss"]
+    LOSS1 --> TOTAL["Total Loss = structure_loss + kind_loss"]
     LOSS2 --> TOTAL
 ```
 
@@ -355,6 +355,17 @@ The input and target vocabularies are **completely separate** — they don't sha
 | Structure targets | ~1,600 |
 | Kind targets | ~700 |
 
+### Relation to Other Approaches
+
+Having different input and output vocabularies is unusual for BERT-style pre-training — standard BERT uses the same word vocabulary for both input and output (mask a word, predict that word from the same vocabulary). However, different input/output vocabularies are common in other NLP tasks built on top of BERT:
+
+- **Named Entity Recognition** — input vocabulary is words, output vocabulary is entity labels (`PER`, `ORG`, `LOC`)
+- **Relation Extraction** — input is tokens, output is relation types (`works_at`, `born_in`)
+- **Semantic Parsing** — input is natural language tokens, output is structured query tokens (SQL keywords, table names)
+- **Translation** (encoder-decoder models) — input vocabulary is one language, output vocabulary is another
+
+In all these cases, the model learns to bridge two different vocabularies through a shared hidden representation. YAML-BERT does this during pre-training itself: the input sees individual tokens (`name`, `replicas`), while the output predicts compound structural targets (`metadata::name`, `Deployment::spec::replicas`). The transformer's hidden states learn to encode enough context to map from one vocabulary space to the other.
+
 ## Model Configuration
 
 ```python
@@ -378,7 +389,7 @@ Total parameters: ~7M (most in embedding tables and prediction heads).
 - **Duration**: 15 epochs, ~15 hours
 - **Optimizer**: AdamW (lr=1e-4, weight_decay=0.01)
 - **Gradient clipping**: max_norm=1.0
-- **Loss**: sum of simple_loss + kind_loss
+- **Loss**: sum of structure_loss + kind_loss
 - **NaN handling**: batches with NaN loss are skipped
 
 ### Loss Curve
@@ -396,30 +407,21 @@ Training supports automatic resume from the latest checkpoint via a systemd serv
 
 ## Evaluation Results
 
-### Capability Tests: 93/93 (100%)
+**Capability tests** (93/93 passing) — 30 capabilities covering parent-child validity, kind conditioning, depth sensitivity, sibling awareness, cross-kind discrimination, RBAC structure, volume semantics, probe structure, and more. Each capability has multiple test cases with handcrafted YAMLs. The model passes all 93 pre-training tests and 27/28 fine-tuning tests.
 
-28 capabilities across structural understanding, kind conditioning, and cross-kind discrimination. Full test suite in `model_tests/test_capabilities.py`.
+**Structural tests** (7/9 passing) — tests for kind conditioning, wrong parent detection, depth awareness, spec vs status distinction, nonsense YAML confidence drop, and missing required fields. The 2 failures are vocabulary coverage issues (rare targets filtered by min_freq).
 
-### Structural Tests: 7/9 (78%)
+**Document similarity** (0.42 average off-diagonal) — cosine similarity between mean-pooled document embeddings for Deployment, Service, Pod, and ConfigMap. The model produces clearly different representations for different kinds. Deployment-Pod similarity is highest (0.60) because Pods are structurally embedded inside Deployments.
 
-Tests for kind conditioning, depth awareness, wrong parent detection, nonsense confidence, and missing field prediction. 2 failures due to vocabulary coverage (`status::replicas` not in vocab).
+**CRD generalization** (11/11 passing) — unseen kinds not in training data (e.g., `RocketLauncher`, `WorkloadRunner`) still get correct predictions for universal structure. Root keys, metadata children, and container patterns all transfer. The structure head generalizes because bigram targets are kind-independent.
 
-### Document Similarity: 0.42 average
+**Path reconstruction** (33/38 edges correct) — mask every key in a YAML one at a time and verify the model predicts the correct compound target (the correct tree edge). 87% of edges are correct. Failures are structurally symmetric siblings (limits vs requests, selector vs labels) where the context is ambiguous.
 
-Cosine similarity between different resource type embeddings. Target was <0.70 (previous approaches scored 0.84-0.92). The model now produces clearly different representations for different kinds.
+**Layer probing** — linear probes at each transformer layer measuring depth, type, parent, and kind accuracy. Depth and type (in the input) start high and degrade through layers. Parent and kind (not in the input) start low and increase — confirming the model genuinely learns these from the prediction targets through attention.
 
-| | Deployment | Service | Pod | ConfigMap |
-|---|---|---|---|---|
-| Deployment | 1.00 | 0.45 | 0.60 | 0.52 |
-| Service | 0.45 | 1.00 | 0.45 | 0.22 |
-| Pod | 0.60 | 0.45 | 1.00 | 0.29 |
-| ConfigMap | 0.52 | 0.22 | 0.29 | 1.00 |
+**Missing field suggestions** — tested across 17 resource kinds with curated YAMLs and on 6,686 real resources from a live OpenShift cluster. Low false positive rate on production YAMLs. Catches missing `resources.requests`, `metadata.labels`, `spec.strategy`, `configMap.items` among others.
 
-Deployment-Pod similarity (0.60) is highest because Pods are embedded inside Deployments.
-
-### CRD Generalization: 11/11 (100%)
-
-Unseen kinds (not in training data) still get correct predictions for universal structure — `metadata`, `name`, `labels`, `resources.limits`/`requests`, container fields. The structure head generalizes because bigram targets are kind-independent.
+**Real cluster validation** — 277 pods, 96 services, 523 configmaps from a live cluster. Correctly produces zero suggestions on fully-configured resources. Identifies genuinely missing fields like `capabilities` in security contexts and `limits` in resource specs.
 
 ## File Structure
 
@@ -456,6 +458,14 @@ model_tests/
 ├── test_capabilities.py  # 93 behavioral tests across 30 capabilities
 └── test_structural.py    # 9 structural understanding tests
 ```
+
+## Future Directions
+
+**Fine-tuning for best practices** — the pre-trained model learns what structure usually appears, not what should appear. Fine-tuning with curated best-practice examples would teach the model to distinguish "common" from "correct" — for example, suggesting `readinessProbe` as a best practice rather than just predicting statistically frequent keys.
+
+**Cross-document understanding** — currently, each YAML document is processed independently. In real Kubernetes clusters, resources reference each other: a Service's `selector` must match a Deployment's `labels`, a PersistentVolumeClaim references a StorageClass, an Ingress routes to a Service. Extending the model to understand relationships across documents would enable validation like "this Service selector doesn't match any Deployment" — catching misconfigurations that are invisible within a single document.
+
+**Domain adaptation** — the architecture is not specific to Kubernetes. Any domain with structured YAML/tree data can use the same approach: tree positional encoding, compound prediction targets, and dual prediction heads. Tekton pipelines, Ansible playbooks, GitHub Actions workflows, and other YAML-based systems could benefit from domain-specific models trained with this architecture.
 
 ## Worked Example: End-to-End Through the Model
 
@@ -585,8 +595,8 @@ Both heads produce logits at **every** position — the model does not know whic
 
 ```
 For every position i:
-  simple_logits[i] = simple_head(hidden_state[i])  → vector of size simple_vocab_size
-  kind_logits[i]   = kind_head(hidden_state[i])    → vector of size kind_vocab_size
+  structure_logits[i] = structure_head(hidden_state[i])  → vector of size structure_vocab_size
+  kind_logits[i]     = kind_head(hidden_state[i])       → vector of size kind_vocab_size
 ```
 
 ```
@@ -608,3 +618,4 @@ Total loss = Structure Head loss (positions 5, 11) + Kind Head loss (position 8)
 ```
 
 This loss backpropagates through the entire model — updating the transformer layers, the embedding tables, and both prediction heads. Over 276,000 documents and 15 epochs, the model learns which keys belong where in the Kubernetes YAML tree.
+
