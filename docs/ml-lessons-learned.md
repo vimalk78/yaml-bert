@@ -480,6 +480,32 @@ If the encoder wasn't trained to produce discriminative per-token representation
 
 ---
 
+## 13. Dynamic Sequence Lengths Don't Break Matrix Multiplication
+
+Different batches can have different sequence lengths. This seems like it should cause shape mismatches, but it doesn't — because model weights don't depend on sequence length.
+
+### Why It Works
+
+The model's weight matrices have fixed shapes determined by `d_model`, not by sequence length:
+
+- Embedding tables: indexed by token ID, not position
+- Linear layers: `Linear(256, 256)` operates on the 256-dim dimension
+- Attention: `Q @ K.T` produces a `(seq_len, seq_len)` matrix that's computed fresh each batch
+
+The tensors that change shape between batches are **activations** (intermediate results), not weights. Batch 1 with `seq_len=45` and batch 2 with `seq_len=80` both multiply by the same weight matrix — just with different numbers of rows.
+
+### Dynamic Padding
+
+Within a batch, sequences are padded to the **longest sequence in that batch**, not to a global maximum. A batch of documents with lengths 30, 45, and 38 pads to 45. The next batch might pad to 80.
+
+This saves memory compared to always padding to `max_seq_len=512`, but it means memory usage varies per batch. A batch with one unusually long document spikes memory — this is why sporadic OOM can occur even when most batches train fine.
+
+### Practical Rule
+
+Don't pad to global max — pad to batch max. But always test with the longest document in your dataset to ensure it fits in GPU memory.
+
+---
+
 ## Summary
 
 | Lesson | One-Line Summary |
@@ -496,3 +522,4 @@ If the encoder wasn't trained to produce discriminative per-token representation
 | 10 | Input features can short-circuit learning. Put info in the target, not the input, if you want the model to learn it. |
 | 11 | Capability tests > accuracy numbers. Know WHERE the model fails, not just how often. |
 | 12 | Pooling can't fix a non-discriminative encoder. Fix the encoder first. |
+| 13 | Model weights don't depend on sequence length. Different batch shapes are fine. Pad to batch max, not global max. |
