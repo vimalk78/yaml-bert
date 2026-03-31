@@ -100,12 +100,21 @@ def suggest_missing_fields(
         last_node: YamlNode = nodes[last_pos]
         next_sibling: int = min(last_node.sibling_index + 1, 31)
 
-        # Append a fake [MASK] node at the end of the sequence
-        fake_token_ids: list[int] = token_ids + [mask_id]
-        fake_node_types: list[int] = node_types + [_NODE_TYPE_INDEX[last_node.node_type]]
-        fake_depths: list[int] = depths + [last_node.depth]
-        fake_siblings: list[int] = siblings + [next_sibling]
-        fake_pos: int = len(token_ids)
+        # Find the insertion point: right after the last sibling's subtree.
+        # Walk forward from last_pos until we find a node at the same or
+        # shallower depth (i.e., the subtree under last_pos has ended).
+        insert_pos: int = last_pos + 1
+        while insert_pos < len(token_ids):
+            if nodes[insert_pos].depth <= last_node.depth:
+                break
+            insert_pos += 1
+
+        # Insert a fake [MASK] node at the correct position in the sequence
+        fake_token_ids: list[int] = token_ids[:insert_pos] + [mask_id] + token_ids[insert_pos:]
+        fake_node_types: list[int] = node_types[:insert_pos] + [_NODE_TYPE_INDEX[last_node.node_type]] + node_types[insert_pos:]
+        fake_depths: list[int] = depths[:insert_pos] + [last_node.depth] + depths[insert_pos:]
+        fake_siblings: list[int] = siblings[:insert_pos] + [next_sibling] + siblings[insert_pos:]
+        fake_pos: int = insert_pos
 
         # Determine which head applies for this position using compute_target logic.
         # Create a fake YamlNode to probe which head to use.
@@ -143,10 +152,19 @@ def suggest_missing_fields(
             else:
                 target_name = id_to_target.get(target_id, "[UNK]")
 
-            # Extract the raw key name from composite target strings
-            # Simple targets: "parent::key" or just "key"
+            # Extract the raw key name and validate parent from composite targets.
+            # Simple targets: "parent::key" or just "key" (root level)
             # Kind targets: "Kind::parent::key"
-            key_name: str = target_name.split("::")[-1] if "::" in target_name else target_name
+            parts: list[str] = target_name.split("::")
+            key_name: str = parts[-1]
+
+            # Validate that the predicted target's parent matches where we're probing.
+            # E.g., "spec::imagePullSecrets" should only be accepted when probing under spec,
+            # not under matchLabels or metadata.
+            if len(parts) >= 2:
+                predicted_parent: str = parts[-2]
+                if predicted_parent != parent_key_name:
+                    continue
 
             # Skip special tokens
             if key_name in ("[PAD]", "[UNK]", "[MASK]"):

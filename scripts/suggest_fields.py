@@ -122,19 +122,29 @@ def main() -> None:
 
     import yaml as pyyaml
     for source, yaml_text in yaml_files:
-        # Extract kind and name for display
-        try:
-            doc = pyyaml.safe_load(yaml_text)
-            if isinstance(doc, dict):
-                kind: str = doc.get("kind", "")
-                name: str = doc.get("metadata", {}).get("name", "") if isinstance(doc.get("metadata"), dict) else ""
-                if kind:
-                    source = f"{source} ({kind}/{name})" if name else f"{source} ({kind})"
-        except Exception:
-            pass
+        # Split multi-document YAML on '---'
+        documents: list[str] = [
+            doc.strip() for doc in yaml_text.split("\n---\n")
+            if doc.strip() and not doc.strip().startswith("#")
+        ]
+        # If no split happened, treat the whole text as one document
+        if not documents:
+            documents = [yaml_text]
 
-        suggestions = suggest_missing_fields(model, vocab, yaml_text, threshold=args.threshold)
-        print_report(suggestions, source=source, fmt=args.format)
+        for doc_text in documents:
+            doc_source: str = source
+            try:
+                doc = pyyaml.safe_load(doc_text)
+                if isinstance(doc, dict):
+                    kind: str = doc.get("kind", "")
+                    name: str = doc.get("metadata", {}).get("name", "") if isinstance(doc.get("metadata"), dict) else ""
+                    if kind:
+                        doc_source = f"{source} ({kind}/{name})" if name else f"{source} ({kind})"
+            except Exception:
+                pass
+
+            suggestions = suggest_missing_fields(model, vocab, doc_text, threshold=args.threshold)
+            print_report(suggestions, source=doc_source, fmt=args.format)
 
     if len(yaml_files) > 1 and args.format == "text":
         total = sum(

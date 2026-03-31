@@ -323,7 +323,7 @@ spec:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
+    parser.add_argument("--vocab", type=str, default="output_v4/vocab.json")
     parser.add_argument("--threshold", type=float, default=0.3)
     args = parser.parse_args()
 
@@ -331,11 +331,12 @@ def main() -> None:
     vocab = Vocabulary.load(args.vocab)
     config = YamlBertConfig()
     emb = YamlBertEmbedding(config=config, key_vocab_size=vocab.key_vocab_size,
-                            value_vocab_size=vocab.value_vocab_size, kind_vocab_size=vocab.kind_vocab_size)
-    model = YamlBertModel(config=config, embedding=emb, key_vocab_size=vocab.key_vocab_size,
-                          kind_vocab_size=vocab.kind_vocab_size)
+                            value_vocab_size=vocab.value_vocab_size)
+    model = YamlBertModel(config=config, embedding=emb,
+                          simple_vocab_size=vocab.simple_target_vocab_size,
+                          kind_vocab_size=vocab.kind_target_vocab_size)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
     print(f"Loaded epoch {checkpoint['epoch']}")
 
