@@ -146,7 +146,7 @@ embedding = LayerNorm(token_embedding + depth_embedding + sibling_embedding + no
 
 The model does NOT receive the document kind (`Deployment`, `Service`) or the parent key (`spec`, `metadata`) as input embeddings. It must **discover** them by attending to surrounding tokens through the transformer layers.
 
-To predict `Deployment::spec::replicas` at a masked position, the model must attend to the `Deployment` value token elsewhere in the sequence, figure out what kind of document it's in, and use that understanding to predict the correct kind-specific key. This is why values are never masked — they must remain visible as context for the model to attend to. The compound prediction targets force the model to build kind-awareness and parent-awareness through computation.
+To predict the trigram `Deployment::spec::replicas` at a masked position, the model must attend to the `Deployment` value token elsewhere in the sequence, figure out what kind of document it's in, and use that understanding to predict the correct kind-specific key. Similarly, to predict the bigram `containers::image`, the model must attend to the `containers` key above it and understand "I'm inside a container list item" — without the parent in the target, a bare `image` prediction would carry no structural meaning since `image` can appear in many different contexts. This is why values are never masked — they must remain visible as context for the model to attend to. The compound prediction targets force the model to build kind-awareness and parent-awareness through computation.
 
 Probing experiments confirm this: kind information starts at 21% at the embedding layer (near random) and rises to 51% at the final layer, built entirely through attention. Parent information follows the same pattern: 36% → 52%.
 
@@ -166,6 +166,8 @@ Token replacement (same as BERT):
 - 10% → unchanged (model must still predict it)
 
 Only KEY and LIST_KEY tokens are eligible for masking. VALUE and LIST_VALUE tokens are never masked — they serve as context that helps the model make predictions.
+
+Masking only 15% per document may seem insufficient to learn a full document's structure. But each document is seen **many times** across 15 epochs, with a different random 15% masked each time. Over 15 epochs, every key position gets masked roughly 2 times on average. Across 276K documents, the model sees millions of masked predictions total — and the learning accumulates in the shared weights. What the model learns from predicting `replicas` in one Deployment helps it predict `replicas` in every other Deployment.
 
 ## Step 4: Compound Prediction Targets
 
