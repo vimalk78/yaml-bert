@@ -8,6 +8,19 @@ SPECIAL_TOKENS = ["[PAD]", "[UNK]", "[MASK]"]
 
 UNIVERSAL_ROOT_KEYS: set[str] = {"apiVersion", "kind", "metadata"}
 
+# Canonical casing for known Kubernetes kinds.
+# Maps lowercase → canonical form.
+_KIND_CANONICAL: dict[str, str] = {}
+
+
+def normalize_kind(kind: str) -> str:
+    """Normalize kind value to canonical casing.
+
+    'configmap' → 'ConfigMap', 'pod' → 'Pod', etc.
+    Unknown kinds are returned as-is.
+    """
+    return _KIND_CANONICAL.get(kind.lower(), kind)
+
 
 def compute_target(node: YamlNode, kind: str) -> tuple[str, str]:
     """Compute hybrid prediction target.
@@ -143,8 +156,28 @@ class VocabBuilder:
         simple_target_counts: dict[str, int] = {}
         kind_target_counts: dict[str, int] = {}
 
+        # First pass: collect all kind values to build canonical casing map
+        raw_kinds: dict[str, dict[str, int]] = {}  # lowercase → {variant: count}
+        prev_was_kind_key = False
+        for node in nodes:
+            if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
+                prev_was_kind_key = (node.token == "kind" and node.depth == 0)
+            elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
+                if prev_was_kind_key:
+                    lower = node.token.lower()
+                    raw_kinds.setdefault(lower, {})
+                    raw_kinds[lower][node.token] = raw_kinds[lower].get(node.token, 0) + 1
+                prev_was_kind_key = False
+
+        # Build canonical map: most frequent casing wins
+        _KIND_CANONICAL.clear()
+        for lower, variants in raw_kinds.items():
+            canonical = max(variants, key=variants.get)
+            _KIND_CANONICAL[lower] = canonical
+
+        # Second pass: count tokens with normalized kinds
         current_kind: str = ""
-        prev_was_kind_key: bool = False
+        prev_was_kind_key = False
         for node in nodes:
             if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
                 key_counts[node.token] = key_counts.get(node.token, 0) + 1
@@ -157,8 +190,9 @@ class VocabBuilder:
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
                 if prev_was_kind_key:
-                    kind_set.add(node.token)
-                    current_kind = node.token
+                    normalized = normalize_kind(node.token)
+                    kind_set.add(normalized)
+                    current_kind = normalized
                 prev_was_kind_key = False
 
         # Filter target vocabs by min_freq
@@ -190,11 +224,13 @@ class VocabBuilder:
             )
         }
 
+        # Build value vocab: min_freq filtered, but always include kind values
+        value_tokens = set(t for t, c in value_counts.items() if c >= min_freq)
+        if kind_set:
+            value_tokens.update(kind_set)  # kinds always in value vocab
         value_vocab = {
             token: i + offset
-            for i, token in enumerate(
-                sorted(t for t, c in value_counts.items() if c >= min_freq)
-            )
+            for i, token in enumerate(sorted(value_tokens))
         }
 
         kind_vocab: dict[str, int] = {"[NO_KIND]": 0}
