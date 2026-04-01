@@ -140,13 +140,15 @@ def main() -> None:
         return
 
     import yaml as pyyaml
+    total_suggestions: int = 0
+    total_docs: int = 0
     for source, yaml_text in yaml_files:
-        # Split multi-document YAML on '---'
-        documents: list[str] = [
-            doc.strip() for doc in yaml_text.split("\n---\n")
-            if doc.strip() and not doc.strip().startswith("#")
-        ]
-        # If no split happened, treat the whole text as one document
+        # Split multi-document YAML using PyYAML's safe_load_all
+        try:
+            raw_docs = list(pyyaml.safe_load_all(yaml_text))
+            documents = [pyyaml.dump(doc, default_flow_style=False) for doc in raw_docs if doc is not None]
+        except Exception:
+            documents = [yaml_text]
         if not documents:
             documents = [yaml_text]
 
@@ -164,14 +166,12 @@ def main() -> None:
 
             suggestions, skipped = suggest_missing_fields(model, vocab, doc_text, threshold=args.threshold)
             print_report(suggestions, source=doc_source, fmt=args.format, skipped=skipped)
+            total_suggestions += len(suggestions)
+            total_docs += 1
 
-    if len(yaml_files) > 1 and args.format == "text":
-        total = sum(
-            len(suggest_missing_fields(model, vocab, yt, threshold=args.threshold)[0])
-            for _, yt in yaml_files
-        )
+    if total_docs > 1 and args.format == "text":
         print(f"\n{'=' * 60}")
-        print(f"  Total: {total} suggestions across {len(yaml_files)} files")
+        print(f"  Total: {total_suggestions} suggestions across {total_docs} documents")
         print(f"{'=' * 60}")
 
 
