@@ -344,7 +344,7 @@ def main() -> None:
     kinds_tested: int = 0
 
     for title, yaml_text in TEST_YAMLS:
-        suggestions = suggest_missing_fields(model, vocab, yaml_text, threshold=args.threshold)
+        suggestions, _skipped = suggest_missing_fields(model, vocab, yaml_text, threshold=args.threshold)
         kinds_tested += 1
         total_suggestions += len(suggestions)
 

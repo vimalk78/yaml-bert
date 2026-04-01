@@ -56,7 +56,12 @@ def load_model(checkpoint_path: str, vocab_path: str, device: str) -> tuple[Yaml
     return model, vocab
 
 
-def print_report(suggestions: list[dict], source: str = "", fmt: str = "text") -> None:
+def print_report(
+    suggestions: list[dict],
+    source: str = "",
+    fmt: str = "text",
+    skipped: dict[str, list[dict]] | None = None,
+) -> None:
     if fmt == "json":
         print(json.dumps({"source": source, "suggestions": suggestions}, indent=2))
         return
@@ -66,7 +71,7 @@ def print_report(suggestions: list[dict], source: str = "", fmt: str = "text") -
         print(f"  {source}")
         print(f"{'=' * 60}")
 
-    if not suggestions:
+    if not suggestions and not skipped:
         print("  No missing fields detected.")
         return
 
@@ -81,6 +86,20 @@ def print_report(suggestions: list[dict], source: str = "", fmt: str = "text") -
             conf: float = item["confidence"]
             strength: str = "STRONG" if conf > 0.8 else "MODERATE" if conf > 0.5 else "WEAK"
             print(f"    [{conf:5.1%}] {item['missing_key']} ({strength})")
+
+    # Show wrong-level predictions the model made
+    if skipped:
+        has_significant = any(
+            any(s["confidence"] >= 0.3 for s in items)
+            for items in skipped.values()
+        )
+        if has_significant:
+            print(f"\n  Wrong-level predictions (parent mismatch, model weakness):")
+            for parent_path, items in skipped.items():
+                for item in items:
+                    if item["confidence"] >= 0.3:
+                        path_display = parent_path if parent_path else "(root)"
+                        print(f"    {path_display}: predicted {item['target']} ({item['confidence']:.1%}) — expected parent '{item['actual_parent']}', model predicted parent '{item['predicted_parent']}'")
 
     print(f"\n  Total: {len(suggestions)} suggestions")
 
@@ -143,12 +162,12 @@ def main() -> None:
             except Exception:
                 pass
 
-            suggestions = suggest_missing_fields(model, vocab, doc_text, threshold=args.threshold)
-            print_report(suggestions, source=doc_source, fmt=args.format)
+            suggestions, skipped = suggest_missing_fields(model, vocab, doc_text, threshold=args.threshold)
+            print_report(suggestions, source=doc_source, fmt=args.format, skipped=skipped)
 
     if len(yaml_files) > 1 and args.format == "text":
         total = sum(
-            len(suggest_missing_fields(model, vocab, yt, threshold=args.threshold))
+            len(suggest_missing_fields(model, vocab, yt, threshold=args.threshold)[0])
             for _, yt in yaml_files
         )
         print(f"\n{'=' * 60}")

@@ -82,6 +82,7 @@ def suggest_missing_fields(
     # already exist at root level, and special tokens.
     model.eval()
     predicted_keys_by_parent: dict[str, dict[str, float]] = {}
+    skipped_by_parent: dict[str, list[dict[str, Any]]] = {}
 
     # Collect all existing keys across the entire document for cross-reference filtering
     all_root_keys: set[str] = {
@@ -93,7 +94,14 @@ def suggest_missing_fields(
 
     for parent_path, positions in key_positions_by_parent.items():
         predicted: dict[str, float] = {}
-        parent_key_name: str = parent_path.split(".")[-1] if parent_path else ""
+        # Extract parent key name, skipping numeric list indices
+        # e.g., "spec.containers.0" → "containers", not "0"
+        parent_key_name: str = ""
+        if parent_path:
+            for part in reversed(parent_path.split(".")):
+                if not part.isdigit():
+                    parent_key_name = part
+                    break
 
         # Use the last key node at this level as a template for the fake node
         last_pos: int = positions[-1]
@@ -164,6 +172,13 @@ def suggest_missing_fields(
             if len(parts) >= 2:
                 predicted_parent: str = parts[-2]
                 if predicted_parent != parent_key_name:
+                    skipped_by_parent.setdefault(parent_path, []).append({
+                        "target": target_name,
+                        "key": key_name,
+                        "predicted_parent": predicted_parent,
+                        "actual_parent": parent_key_name,
+                        "confidence": prob,
+                    })
                     continue
 
             # Skip special tokens
@@ -196,7 +211,7 @@ def suggest_missing_fields(
                 })
 
     suggestions.sort(key=lambda s: -s["confidence"])
-    return suggestions
+    return suggestions, skipped_by_parent
 
 
 def _encode_nodes(
