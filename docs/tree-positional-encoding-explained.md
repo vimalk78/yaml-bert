@@ -73,7 +73,6 @@ This path has multiple dimensions of information:
 | **Depth** | How many steps from root (vertical position) | depth=3 means 3 levels deep |
 | **Sibling index** | Position among siblings (horizontal position) | sibling=0 means first child |
 | **Node type** | Structural role | KEY, VALUE, LIST_KEY, LIST_VALUE |
-| **Parent key** | Immediate ancestor (contextual position) | parent="spec" vs parent="status" |
 
 The fundamental difference: **sequential position is 1D, tree position is multi-dimensional.**
 
@@ -82,10 +81,10 @@ The fundamental difference: **sequential position is 1D, tree position is multi-
 We encode each dimension separately and sum:
 
 ```
-TPE(node) = depth_emb(depth) + sibling_emb(sibling_index) + type_emb(node_type) + parent_emb(parent_key)
+TPE(node) = depth_emb(depth) + sibling_emb(sibling_index) + type_emb(node_type)
 ```
 
-Each component is a learned embedding vector of the same dimension (e.g., 128). The full input to the transformer for each node is:
+Each component is a learned embedding vector of dimension d_model (256). The full input to the transformer for each node is:
 
 ```
 input(node) = token_emb(token) + TPE(node)
@@ -93,20 +92,26 @@ input(node) = token_emb(token) + TPE(node)
 
 Where `token_emb` comes from either the key vocabulary or value vocabulary depending on node type.
 
+### What Is NOT in the Input
+
+Notably, we do **not** encode the parent key or the resource kind in the input embedding. Earlier versions of the model did — but this caused the residual connection to carry these features through all layers unchanged. Auxiliary losses asking "predict the parent" or "predict the kind" were trivially solved by reading from the residual, contributing zero learning signal.
+
+Instead, parent and kind information appear in the **prediction target**: the model must predict `parent::key` (bigram) or `kind::parent::key` (trigram) rather than just the key. This forces the model to learn parent-child and kind-specific structure through attention, not input copying.
+
 ## Mathematical Properties
 
 ### 1. Uniqueness
 
-Every distinct combination of (depth, sibling, type, parent) produces a distinct vector, provided the component embeddings are linearly independent. Learned embeddings naturally become linearly independent during training — gradient descent pushes them apart to reduce loss.
+Every distinct combination of (depth, sibling, type) produces a distinct vector, provided the component embeddings are linearly independent. Learned embeddings naturally become linearly independent during training — gradient descent pushes them apart to reduce loss.
 
 For example, these two nodes get distinct encodings:
 
 ```
-replicas under spec:   depth_emb(1) + sibling_emb(0) + type_emb(KEY) + parent_emb("spec")
-replicas under status: depth_emb(1) + sibling_emb(0) + type_emb(KEY) + parent_emb("status")
+containers under spec.template:  depth_emb(3) + sibling_emb(0) + type_emb(KEY)
+replicas under spec:             depth_emb(1) + sibling_emb(0) + type_emb(KEY)
 ```
 
-They share three components but differ in `parent_emb`. The resulting vectors are distinct.
+They share sibling and type but differ in depth. The resulting vectors are distinct.
 
 ### 2. Distance-Sensitivity (Tree Proximity)
 
@@ -116,23 +121,23 @@ The dot product between two nodes' encodings reflects their structural similarit
 TPE(node_i) . TPE(node_j) = sum of dot products across all component pairs
 ```
 
-**Siblings** (same parent, same depth, same type) share three of four components:
+**Siblings** (same parent, same depth, same type) share two of three components:
 
 ```
-TPE(name at containers.0) = depth_emb(1) + sibling_emb(0) + type_emb(LIST_KEY) + parent_emb("containers")
-TPE(image at containers.0) = depth_emb(1) + sibling_emb(1) + type_emb(LIST_KEY) + parent_emb("containers")
+TPE(name at depth 4)  = depth_emb(4) + sibling_emb(0) + type_emb(KEY)
+TPE(image at depth 4) = depth_emb(4) + sibling_emb(1) + type_emb(KEY)
 ```
 
-These share depth, type, and parent — they differ only in sibling. Their dot product is high.
+These share depth and type — they differ only in sibling. Their dot product is high.
 
-**Distant nodes** (different subtrees) differ in parent and possibly depth:
+**Distant nodes** (different subtrees) differ in depth and possibly type:
 
 ```
-TPE(name under metadata) = depth_emb(1) + sibling_emb(0) + type_emb(KEY) + parent_emb("metadata")
-TPE(name under containers.1) = depth_emb(1) + sibling_emb(0) + type_emb(LIST_KEY) + parent_emb("containers")
+TPE(name under metadata)    = depth_emb(1) + sibling_emb(0) + type_emb(KEY)
+TPE(name under containers)  = depth_emb(4) + sibling_emb(0) + type_emb(KEY)
 ```
 
-These differ in type and parent. Their dot product is lower.
+These differ in depth. Their dot product is lower (assuming learned depth embeddings are not aligned, which our embedding structure analysis confirms — depth embeddings are nearly orthogonal).
 
 **This property emerges naturally from the additive structure**: more shared components means higher similarity, which means stronger attention between structurally related nodes.
 
@@ -147,15 +152,15 @@ score(i, j) = (W_Q . x_i)^T . (W_K . x_j)
 Where `x = token_emb + TPE`. Since TPE is a sum of components, this dot product decomposes into **cross-term interactions**:
 
 ```
-score ~ (depth_i x depth_j) + (depth_i x parent_j) + (parent_i x parent_j)
-      + (sibling_i x sibling_j) + (type_i x type_j) + (token_i x parent_j) + ...
+score ~ (depth_i x depth_j) + (sibling_i x sibling_j) + (type_i x type_j)
+      + (token_i x depth_j) + (depth_i x token_j) + ...
 ```
 
 The W_Q and W_K matrices learn which cross-terms matter. Different attention heads can specialize:
 
-- **A "parent-child" head** could learn to weight the (token_i x parent_j) cross-term — "attend to nodes whose token matches my parent key"
-- **A "sibling" head** could weight (parent_i x parent_j) — "attend to nodes that share my parent"
 - **A "depth-aware" head** could weight (depth_i x depth_j) — "attend to nodes at similar depth"
+- **A "sibling" head** could weight (sibling_i x sibling_j) — "attend to nearby siblings"
+- **A "token-depth" head** could weight (token_i x depth_j) — "attend to specific tokens at specific depths"
 
 This decomposability means the model doesn't need separate mechanisms for different tree relationships — the multi-head attention with additive positional encoding can learn them all through the same linear algebra.
 
@@ -175,32 +180,25 @@ In our learned depth embedding:
 depth_emb(3) - depth_emb(1) is NOT guaranteed to equal depth_emb(5) - depth_emb(3)
 ```
 
-The model must learn that "two levels apart" is a consistent relationship across different absolute depths. With only ~10 depth levels and d_model dimensions, this is easily learnable — but it is learned, not built in.
+The model must learn that "two levels apart" is a consistent relationship across different absolute depths. Empirically, we found that the learned depth embeddings are **nearly orthogonal** — the model treats each depth as an independent category rather than learning a smooth gradient. Adjacent depths (0 and 1) are no more similar than distant depths (0 and 10).
 
-We could recover this property by using sinusoidal encoding for the depth dimension specifically:
-
-```
-depth_component(d, 2i)   = sin(d / 10000^(2i/d_depth))
-depth_component(d, 2i+1) = cos(d / 10000^(2i/d_depth))
-```
-
-This would give "attend to nodes k levels up/down" as a built-in linear operation. For our scale (small depth range, sufficient training data), this optimization is unnecessary — but it would be theoretically cleaner.
+This suggests the model found categorical depth (each level is a distinct context) more useful than ordinal depth (levels form a gradient) for the prediction task. A potential improvement: initialize depth embeddings with sinusoidal encoding to provide a smooth starting point that the model can refine.
 
 ## Comparison Table
 
 | Property | Sequential (Sinusoidal) | Tree (Learned Additive) |
 |----------|------------------------|------------------------|
-| Position space | 1D integer | Multi-dimensional (depth, sibling, type, parent) |
+| Position space | 1D integer | Multi-dimensional (depth, sibling, type) |
 | Encoding method | Deterministic sine/cosine | Learned embedding per component, summed |
 | Uniqueness | Yes (by construction) | Yes (learned; linearly independent embeddings) |
 | Distance-sensitivity | Yes (dot product decreases with distance) | Yes (more shared components = higher dot product) |
 | Relative position | Built-in via rotation matrices | Learned by attention heads from cross-terms |
-| Extrapolation | Yes (works for unseen positions) | Limited (unseen depths/parents map to [UNK]) |
-| Structural relationships | "k positions away" = rotation | "same parent", "sibling", "parent-child" = learned via cross-terms |
+| Extrapolation | Yes (works for unseen positions) | Limited (unseen depths clamped to max) |
+| Structural relationships | "k positions away" = rotation | "same depth", "sibling", "same type" = learned via cross-terms |
 
 ## The One-Sentence Summary
 
-Sequential positional encoding answers "where am I in the sequence?" with one number. Tree positional encoding answers "where am I in the tree?" with multiple coordinates — depth, sibling order, role, and ancestry — each capturing one axis of structural position, summed into a single vector that the attention mechanism can decompose into structural relationships.
+Sequential positional encoding answers "where am I in the sequence?" with one number. Tree positional encoding answers "where am I in the tree?" with multiple coordinates — depth, sibling order, and structural role — each capturing one axis of structural position, summed into a single vector that the attention mechanism can decompose into structural relationships.
 
 ## Why This Matters for Kubernetes YAML
 
@@ -213,15 +211,13 @@ status:
   replicas: 2         # actual replica count (cluster state)
 ```
 
-Both `replicas` keys have the same token embedding. Without tree positional encoding, the model cannot distinguish them structurally — it would have to rely entirely on surrounding context.
-
-With tree positional encoding, the difference is explicit:
+Both `replicas` keys have the same token embedding. With tree positional encoding, the difference is partially encoded:
 
 ```
-TPE(spec.replicas)   = depth_emb(1) + sibling_emb(0) + type_emb(KEY) + parent_emb("spec")
-TPE(status.replicas) = depth_emb(1) + sibling_emb(0) + type_emb(KEY) + parent_emb("status")
+TPE(spec.replicas)   = depth_emb(1) + sibling_emb(0) + type_emb(KEY)
+TPE(status.replicas) = depth_emb(1) + sibling_emb(0) + type_emb(KEY)
 ```
 
-The parent_emb component directly encodes that one `replicas` lives under `spec` and the other under `status`. The model doesn't need to figure this out from context — it's told.
+These TPE vectors are **identical** — both nodes are at the same depth, same sibling index, same type. The model must rely on **attention to context** (the unmasked `spec` and `status` keys nearby in the sequence) to distinguish them. This is intentional: parent information is encoded in the prediction target (`spec::replicas` vs `status::replicas`), forcing the model to learn contextual disambiguation through attention rather than reading a parent embedding from the residual stream.
 
-This is the core value proposition: **tree positional encoding gives the transformer explicit structural information that would otherwise have to be learned implicitly from attention patterns over linearized sequences.**
+This is the core design principle: **tree positional encoding provides structural coordinates (depth, sibling, type) that are hard to infer from context, while parent and kind information are placed in the prediction target to force the model to learn them through attention.**

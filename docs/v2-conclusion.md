@@ -1,5 +1,7 @@
 # YAML-BERT v2: Kind Embedding — Conclusions
 
+> **Historical document.** This describes the v1 -> v2 transition. The current model (v4/v5) removed kind_embedding from the input and instead uses hybrid bigram/trigram prediction targets. See [architecture.md](architecture.md) for the current design.
+
 ## What We Built
 
 v2 added `kind_embedding` — a document-level positional component that tells every node "you're inside a Deployment" or "you're inside a Service." This was added because v1 couldn't distinguish kind-specific structures (e.g., `replicas` is valid in Deployment spec but not in Pod spec).
