@@ -619,3 +619,6 @@ Total loss = Structure Head loss (positions 5, 11) + Kind Head loss (position 8)
 
 This loss backpropagates through the entire model — updating the transformer layers, the embedding tables, and both prediction heads. Over 276,000 documents and 15 epochs, the model learns which keys belong where in the Kubernetes YAML tree.
 
+---
+
+**Note on naming:** This document uses "Structure Head" for readability. In the code it is called `simple_head` (`model.simple_head`). Both refer to the same thing — the prediction head for bigram targets (`parent::key`).
