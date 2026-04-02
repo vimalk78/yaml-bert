@@ -40,9 +40,13 @@ echo "============================================================"
 
 echo ""
 echo "============================================================"
-echo "  1. Unit Tests (with coverage)"
+echo "  1. Unit Tests"
 echo "============================================================"
-python -m pytest tests/ --cov=yaml_bert --cov-report=term-missing --cov-config=.coveragerc -q
+if python -c "import pytest_cov" 2>/dev/null; then
+    python -m pytest tests/ --cov=yaml_bert --cov-report=term-missing --cov-config=.coveragerc -q
+else
+    python -m pytest tests/ -q
+fi
 
 echo ""
 echo "============================================================"

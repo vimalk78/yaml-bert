@@ -64,7 +64,7 @@ def build_capabilities() -> list[Capability]:
     # ==========================================================
     capabilities.append(Capability(
         name="Parent-child validity",
-        description="Model predicts keys that are valid children of the parent node",
+        description="Mask a key under a known parent (spec, metadata, containers, etc). The model should predict keys that actually belong under that parent, not keys from other parents.",
         tests=[
             TestCase(
                 name="spec children in Deployment",
@@ -168,7 +168,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Kind conditioning",
-        description="The kind value influences what keys appear under spec",
+        description="Mask a key under 'spec' in different resource kinds (Deployment, Service, ConfigMap, etc). Same parent, same tree position — only the kind changes. The model should predict kind-appropriate keys: 'replicas' for Deployment, 'type' for Service, 'data' for ConfigMap.",
         tests=[
             TestCase(
                 name="Deployment spec has replicas",
@@ -254,7 +254,7 @@ rules:
     # ==========================================================
     capabilities.append(Capability(
         name="Depth sensitivity",
-        description="Model predictions change appropriately with depth",
+        description="Mask keys at different depths in the YAML tree. At depth 0 the model should predict root keys (kind, apiVersion, metadata, spec). At depth 3+ it should predict nested keys (port, image).",
         tests=[
             TestCase(
                 name="Depth 0: top-level keys only",
@@ -310,7 +310,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Sibling awareness",
-        description="Model predicts keys that are valid siblings of existing keys",
+        description="Mask one sibling key when another is present. If 'limits' exists under 'resources', the model should predict 'requests' as its sibling, not an unrelated key.",
         tests=[
             TestCase(
                 name="requests siblings with limits",
@@ -383,7 +383,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Required fields",
-        description="Model predicts mandatory keys with high confidence",
+        description="Mask required Kubernetes keys (apiVersion, metadata, name). The model should predict these with high confidence (>50-90%) since they appear in every valid resource.",
         tests=[
             TestCase(
                 name="apiVersion is required at root",
@@ -434,7 +434,7 @@ metadata:
     # ==========================================================
     capabilities.append(Capability(
         name="Invalid structure rejection",
-        description="Model has low confidence when structure is wrong",
+        description="Place keys in structurally wrong positions (containers under metadata, replicas under metadata). The model should have low confidence (<10%) and NOT predict the wrong key as top-1.",
         phase="finetune",
         tests=[
             TestCase(
@@ -500,7 +500,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Cross-kind discrimination",
-        description="Different resource types produce structurally appropriate predictions",
+        description="Mask a key under spec for less common kinds (Secret, PVC, Ingress, NetworkPolicy, etc). The model should predict kind-specific keys, not generic ones.",
         tests=[
             TestCase(
                 name="Secret has type field",
@@ -586,7 +586,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Value-context sensitivity",
-        description="Unmasked values influence key predictions (values serve as context)",
+        description="Values (like '80' for a port or 'nginx' for an image) are unmasked context. The model should use them to produce better key predictions — e.g., predicting 'containerPort' when the value is a port number.",
         tests=[
             TestCase(
                 name="ports context: containerPort vs port",
@@ -653,7 +653,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Multi-container awareness",
-        description="Model understands list item structure repeats",
+        description="In a list of containers, each item should have the same fields (image, name, command). Mask a key in the second container or in initContainers — the model should still predict container fields.",
         tests=[
             TestCase(
                 name="Second container has same fields as first",
@@ -700,7 +700,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="RBAC structure",
-        description="Model understands RBAC-specific key patterns",
+        description="RBAC resources (Role, RoleBinding) have unique structures — rules with apiGroups/resources/verbs, roleRef and subjects. Mask these keys and verify the model predicts RBAC-appropriate fields.",
         tests=[
             TestCase(
                 name="Role rules have apiGroups",
@@ -747,7 +747,7 @@ subjects:
     # ==========================================================
     capabilities.append(Capability(
         name="Volume semantics",
-        description="Model understands volume types and mount structure",
+        description="Mask keys in the volumes section. The model should predict volume-related keys (emptyDir, configMap, secret) under volumes, and volume types under individual volume entries.",
         tests=[
             TestCase(
                 name="volumes under pod spec",
@@ -810,7 +810,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="StatefulSet structure",
-        description="Model understands StatefulSet-specific patterns",
+        description="StatefulSets have unique fields like serviceName and volumeClaimTemplates that Deployments don't. Mask these and verify the model predicts StatefulSet-specific keys.",
         tests=[
             TestCase(
                 name="StatefulSet has serviceName",
@@ -879,7 +879,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="DaemonSet structure",
-        description="Model distinguishes DaemonSet from Deployment",
+        description="DaemonSets have updateStrategy but NOT replicas (they run on all nodes). Mask updateStrategy and verify the model predicts DaemonSet-specific keys.",
         tests=[
             TestCase(
                 name="DaemonSet has updateStrategy",
@@ -915,7 +915,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Job structure",
-        description="Model understands Job-specific patterns",
+        description="Jobs have backoffLimit, completions, and require restartPolicy: Never in their pod template. Mask these keys and verify Job-specific predictions.",
         tests=[
             TestCase(
                 name="Job has backoffLimit",
@@ -964,7 +964,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Probe structure",
-        description="Model understands probe configuration patterns",
+        description="Liveness/readiness probes have specific fields: httpGet/exec/tcpSocket for the action, and periodSeconds/initialDelaySeconds for timing. Mask these and verify.",
         tests=[
             TestCase(
                 name="httpGet probe fields",
@@ -1018,7 +1018,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Security context",
-        description="Model understands security configuration patterns",
+        description="SecurityContext fields differ at pod level (fsGroup, runAsUser) vs container level (readOnlyRootFilesystem, capabilities). Mask and verify the model knows which level it's at.",
         tests=[
             TestCase(
                 name="pod securityContext fields",
@@ -1068,7 +1068,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Service port structure",
-        description="Model understands Service port and type patterns",
+        description="Service ports have targetPort, port, protocol, name. NodePort services additionally have nodePort. Mask these and verify Service-specific port predictions.",
         tests=[
             TestCase(
                 name="Service port has targetPort",
@@ -1113,7 +1113,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Scheduling and affinity",
-        description="Model understands scheduling constraint patterns",
+        description="Pod scheduling uses tolerations (operator, key, value, effect) and nodeSelector/affinity. Mask these and verify the model predicts scheduling-related keys.",
         tests=[
             TestCase(
                 name="tolerations structure",
@@ -1163,7 +1163,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="HPA structure",
-        description="Model understands HPA-specific patterns",
+        description="HorizontalPodAutoscaler has scaleTargetRef, minReplicas, maxReplicas. Mask these and verify HPA-specific predictions.",
         tests=[
             TestCase(
                 name="HPA has scaleTargetRef",
@@ -1210,7 +1210,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Annotation patterns",
-        description="Model understands common annotation structures",
+        description="Annotations and labels live under metadata and commonly co-occur. Labels have conventional keys like 'app', 'version', 'component'. Mask and verify.",
         tests=[
             TestCase(
                 name="annotations under metadata",
@@ -1252,7 +1252,7 @@ metadata:
     # ==========================================================
     capabilities.append(Capability(
         name="Kind-specific spec children",
-        description="Different resource kinds have different valid keys under spec",
+        description="Pod has containers directly under spec. Deployment has template (not containers). ConfigMap/Secret have data (not spec). DaemonSet has no replicas. Mask and verify kind-specific structure.",
         tests=[
             TestCase(
                 name="Pod spec has containers directly",
@@ -1370,7 +1370,7 @@ data:
     # ==========================================================
     capabilities.append(Capability(
         name="Kind-specific invalid structure rejection",
-        description="Model rejects keys that are wrong for the document's kind",
+        description="Place kind-wrong keys (replicas in Pod, containers in Deployment spec, spec in ConfigMap). The model should NOT predict these as top-1 — they belong to other kinds.",
         phase="finetune",
         tests=[
             TestCase(
@@ -1501,7 +1501,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Same structure different kind",
-        description="Identical tree position yields different predictions based on kind",
+        description="Same tree position (first key under spec at depth 1) in different kinds. Deployment should predict replicas/template, Service should predict type/ports, Pod should predict containers. Same position, different predictions.",
         tests=[
             TestCase(
                 name="First key under Deployment spec",
@@ -1571,7 +1571,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Kind embedding preserves valid structures",
-        description="Adding kind embedding does not reduce accuracy on valid YAMLs",
+        description="Regression check: the model should still correctly predict valid keys in well-formed YAMLs. Kind-specific predictions should not break universal structure knowledge.",
         tests=[
             TestCase(
                 name="Valid Deployment keys correct",
@@ -2196,7 +2196,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Workload controller distinction",
-        description="Deployment, StatefulSet, DaemonSet, Job have distinct spec fields",
+        description="Four workload controllers with overlapping but distinct spec fields. Deployment has strategy, StatefulSet has serviceName, DaemonSet has NO replicas, Job has backoffLimit. Mask the distinguishing keys.",
         tests=[
             TestCase(
                 name="Deployment spec: replicas, selector, template, strategy",
@@ -2314,7 +2314,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="ConfigMap vs Secret",
-        description="ConfigMap and Secret share data but have different associated fields",
+        description="ConfigMap has binaryData, Secret has stringData and type. Both share 'data'. Mask the distinguishing keys and verify the model tells them apart.",
         tests=[
             TestCase(
                 name="ConfigMap has binaryData",
@@ -2373,7 +2373,7 @@ data:
     # ==========================================================
     capabilities.append(Capability(
         name="Container field completeness",
-        description="Model predicts all common container fields correctly",
+        description="Containers have many fields: args, resources, securityContext, volumeMounts. Mask each one with other container fields present as context. The model should predict each correctly.",
         tests=[
             TestCase(
                 name="Container args field",
@@ -2473,7 +2473,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Ingress structure",
-        description="Model understands Ingress-specific nested structure",
+        description="Ingress has deeply nested structure: spec.rules[].host, spec.rules[].http.paths[].path/backend. Mask at each nesting level and verify.",
         tests=[
             TestCase(
                 name="Ingress spec.rules[].host",
@@ -2557,7 +2557,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="PV and PVC structure",
-        description="Model understands PersistentVolume and PersistentVolumeClaim fields",
+        description="PV has capacity, accessModes, persistentVolumeReclaimPolicy. PVC has storageClassName, accessModes, resources. Mask and verify storage-specific predictions.",
         tests=[
             TestCase(
                 name="PV has capacity and accessModes",
@@ -2625,7 +2625,7 @@ spec:
     # ==========================================================
     capabilities.append(Capability(
         name="Label and annotation structure",
-        description="Labels and annotations appear under metadata, labels have common keys",
+        description="Labels and annotations are siblings under metadata. Labels commonly contain keys like 'app', 'version', 'component'. Mask and verify metadata-level structure.",
         tests=[
             TestCase(
                 name="labels is a sibling of annotations",
@@ -2845,7 +2845,9 @@ def main() -> None:
             else:
                 status = "FAIL"
 
-            print(f"  [{status}] {result.test_name}")
+            top1: str = result.predictions[0][0] if result.predictions else "?"
+            top1_conf: float = result.predictions[0][1] if result.predictions else 0.0
+            print(f"  [{status}] {result.test_name} — top: '{top1}' ({top1_conf:.1%})")
             if args.verbose or not result.passed:
                 print(f"         {result.details}")
                 for i, (key, prob) in enumerate(result.predictions[:5]):
