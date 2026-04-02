@@ -72,7 +72,7 @@ Five learned embedding tables, summed into the input vector:
 | `sibling_embedding` | Position among siblings (0th child, 1st child, ...) |
 | `node_type_embedding` | KEY / VALUE / LIST_KEY / LIST_VALUE |
 
-Kind and parent-key awareness come from the prediction targets, not the input — this prevents residual shortcutting (see [design rationale](docs/next-training-improvements.md)).
+Kind and parent-key awareness come from the prediction targets, not the input — this prevents residual shortcutting (see [architecture doc](docs/architecture.md) for design rationale).
 
 ## Usage
 
@@ -164,6 +164,10 @@ pip install -r requirements.txt
 - Python 3.10+
 - PyTorch >= 2.0
 - PyYAML, tqdm, datasets (HuggingFace)
+
+## Built With
+
+This project was built with [Claude Code](https://claude.ai/code) as an AI-assisted development experiment. The [development plans](docs/superpowers/) show how AI was used for architecture design, planning, and implementation.
 
 ## License
 
