@@ -37,7 +37,7 @@ The model passes behavioral tests across 28 pre-training capabilities including:
 - Probe structure, Security context, HPA, Scheduling, Ingress, PV/PVC
 - Workload controller distinction, ConfigMap vs Secret, Container field completeness
 
-See [full test results](docs/capability-test-results.md).
+See [full test results](docs/evaluation-results.md).
 
 ## Architecture
 
@@ -151,7 +151,7 @@ testdata/                # Sample K8s YAMLs for testing
 
 - [Tree Positional Encoding Explained](docs/tree-positional-encoding-explained.md) — mathematical foundations
 - [Architecture](docs/architecture.md) — design decisions
-- [Capability Test Results](docs/capability-test-results.md) — full test output
+- [Evaluation Results](docs/evaluation-results.md) — capability tests, similarity, TPE verification
 - [Next Training Improvements](docs/next-training-improvements.md) — planned experiments
 - [Development Plans](docs/superpowers/) — AI-assisted planning docs (built with Claude Code)
 
