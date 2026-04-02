@@ -1,27 +1,41 @@
 #!/bin/bash
 # Auto-resuming training script. Used by systemd service.
 # Finds the latest checkpoint and resumes, or starts fresh.
-# Stops automatically when training completes (15 epochs).
+#
+# Usage:
+#   ./scripts/train_service.sh [output_dir] [epochs] [batch_size]
+#
+# Examples:
+#   ./scripts/train_service.sh output_v5 30 64
+#   ./scripts/train_service.sh  # defaults: output_v4, 15 epochs, batch 24
 
 set -e
 
-PROJECT_DIR="/home/vimal/src/AI-ML/yaml-bert"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUTPUT_DIR="${1:-$PROJECT_DIR/output_v4}"
-VENV="/home/vimal/src/AI-ML/venv-AI-ML/bin/activate"
+EPOCHS="${2:-15}"
+BATCH_SIZE="${3:-24}"
 
 cd "$PROJECT_DIR"
-source "$VENV"
 
-# Check if training already completed
-if [ -f "$OUTPUT_DIR/checkpoints/yaml_bert_v4_epoch_15.pt" ]; then
-    echo "Training already complete (epoch 15 checkpoint exists). Exiting."
-    exit 0
+# Activate venv if it exists
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+elif [ -n "$VIRTUAL_ENV" ]; then
+    : # already in a venv
 fi
 
 # Find latest checkpoint
 LATEST_CHECKPOINT=""
 if [ -d "$OUTPUT_DIR/checkpoints" ]; then
     LATEST_CHECKPOINT=$(ls -t "$OUTPUT_DIR/checkpoints"/yaml_bert_v4_epoch_*.pt 2>/dev/null | head -1)
+fi
+
+# Check if training already completed
+FINAL="$OUTPUT_DIR/checkpoints/yaml_bert_v4_epoch_${EPOCHS}.pt"
+if [ -f "$FINAL" ]; then
+    echo "Training already complete ($FINAL exists). Exiting."
+    exit 0
 fi
 
 RESUME_FLAG=""
@@ -32,11 +46,11 @@ else
     echo "$(date): Starting fresh training"
 fi
 
-python scripts/train.py \
+PYTHONPATH=. python scripts/train.py \
     --max-docs 0 \
-    --epochs 15 \
+    --epochs "$EPOCHS" \
     --vocab-min-freq 100 \
-    --batch-size 24 \
+    --batch-size "$BATCH_SIZE" \
     --output-dir "$OUTPUT_DIR" \
     $RESUME_FLAG
 

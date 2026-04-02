@@ -11,3 +11,7 @@ output*/
 cluster-yamls/
 *.pkl
 *.txt
+
+# Private teaching materials
+docs/ml-lessons-learned.md
+docs/ml-quiz.md

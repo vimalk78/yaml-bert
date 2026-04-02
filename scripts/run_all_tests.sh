@@ -76,7 +76,7 @@ echo ""
 echo "============================================================"
 echo "  6. Suggest Fields (nginx deployment)"
 echo "============================================================"
-python scripts/suggest_fields.py "$CHECKPOINT" --vocab "$VOCAB" --yaml-file data/k8s-yamls/deployment/deployment-nginx.yaml
+python scripts/suggest_fields.py "$CHECKPOINT" --vocab "$VOCAB" --yaml-file testdata/deployment/deployment-nginx.yaml
 
 echo ""
 echo "============================================================"

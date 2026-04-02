@@ -1,16 +1,43 @@
 # YAML-BERT
 
-Transformer model with **tree positional encoding** that learns structural patterns from Kubernetes YAML manifests.
+Transformer model with **tree positional encoding** that learns structural patterns from Kubernetes YAML manifests. Built as a research project to explore how attention behaves on structured (tree) data vs sequential text.
 
 ## What This Is
 
-Standard transformers use sequential positional encoding (position 1, 2, 3...). YAML is a tree, not a sequence. YAML-BERT replaces sequential encoding with **tree-aware positional encoding** — each node's position is defined by its depth, sibling order, node type, and parent key.
+Standard transformers use sequential positional encoding (position 1, 2, 3...). YAML is a tree, not a sequence. YAML-BERT replaces sequential encoding with **tree-aware positional encoding** — each node's position is defined by its depth, sibling order, and node type.
 
-The model learns the statistical regularities of how practitioners write Kubernetes configs — patterns that no schema captures:
+The model uses **hybrid bigram/trigram prediction targets** — predicting `spec::replicas` (parent-aware) instead of just `replicas`, and `Deployment::spec::replicas` (kind-aware) for kind-specific fields. This forces the model to learn both universal K8s structure and kind-specific patterns.
+
+**What the model learns:**
 
 - **Structural patterns**: `containers` goes under `spec.template.spec`, not under `metadata`
 - **Cross-field correlations**: if `livenessProbe` exists, `readinessProbe` usually exists too
-- **Kind-specific structure**: Deployments have `replicas`, Services have `type`
+- **Kind-specific structure**: Deployments have `replicas`, Services have `type`, ConfigMaps have `data`
+- **Missing field detection**: suggests fields you likely forgot based on learned patterns
+
+## Results
+
+Trained on 276,520 Kubernetes YAML files from [substratusai/the-stack-yaml-k8s](https://huggingface.co/datasets/substratusai/the-stack-yaml-k8s).
+
+| Metric | Value |
+|--------|-------|
+| Pre-training capability tests | 93/93 (28 capabilities) |
+| Fine-tuning capability tests | 26/28 |
+| Document similarity (avg off-diagonal cosine) | 0.46 (target: < 0.70) |
+| Model parameters | 7.3M |
+| Training | 30 epochs on L4 GPU |
+
+### Capability Tests
+
+The model passes behavioral tests across 28 pre-training capabilities including:
+
+- Parent-child validity, Kind conditioning, Depth sensitivity, Sibling awareness
+- Required fields, Cross-kind discrimination, Value-context sensitivity
+- RBAC structure, Volume semantics, StatefulSet/DaemonSet/Job/CronJob structure
+- Probe structure, Security context, HPA, Scheduling, Ingress, PV/PVC
+- Workload controller distinction, ConfigMap vs Secret, Container field completeness
+
+See [full test results](docs/capability-test-results.md).
 
 ## Architecture
 
@@ -18,124 +45,115 @@ The model learns the statistical regularities of how practitioners write Kuberne
 YAML Document
     |
     v
-YAML Parser → tree of (key, value, depth, parent_path) nodes
+YAML Parser -> tree of (key, value, depth, sibling, node_type) nodes
     |
     v
-Linearize tree → flat sequence of nodes
+Linearize tree -> flat sequence of nodes (DFS traversal)
     |
     v
-Token Embedding + Tree Positional Encoding
+Token Embedding + Tree Positional Encoding (depth + sibling + node_type)
     |
     v
-Transformer Encoder (multi-head self-attention)
+Transformer Encoder (6 layers, 8 heads, d_model=256)
     |
     v
-Masked key prediction head
+Two prediction heads: simple (bigram) + kind-specific (trigram)
 ```
 
 ### Tree Positional Encoding
 
-Six learned embedding tables, all summed into the input vector:
+Five learned embedding tables, summed into the input vector:
 
 | Component | What it captures |
 |-----------|-----------------|
-| `key_embedding` | "I am this key" |
-| `value_embedding` | "I am this value" |
-| `depth_embedding` | "I am at this depth in the tree" |
-| `sibling_embedding` | "I am the Nth child of my parent" |
-| `node_type_embedding` | "I am a KEY / VALUE / LIST_KEY / LIST_VALUE" |
-| `parent_key_embedding` | "My parent is this key" |
+| `key_embedding` | Token identity for keys |
+| `value_embedding` | Token identity for values |
+| `depth_embedding` | Depth in the YAML tree (0 = root, 1 = top-level, ...) |
+| `sibling_embedding` | Position among siblings (0th child, 1st child, ...) |
+| `node_type_embedding` | KEY / VALUE / LIST_KEY / LIST_VALUE |
 
-## Results (v1.0)
-
-Trained on 276,520 Kubernetes YAML files from [substratusai/the-stack-yaml-k8s](https://huggingface.co/datasets/substratusai/the-stack-yaml-k8s).
-
-| Metric | Value |
-|--------|-------|
-| Top-1 key prediction accuracy | 95.4% |
-| Top-5 key prediction accuracy | 99.4% |
-| Capability tests passing | 53/54 (20 capabilities) |
-| Model parameters | 7.3M |
-| Training | 10 epochs, GTX 1650 |
-
-### Capability Tests
-
-The model passes behavioral tests across 20 capabilities:
-
-- Parent-child validity, Kind conditioning, Depth sensitivity
-- Sibling awareness, Required fields, Invalid structure rejection
-- Cross-kind discrimination, Volume semantics, StatefulSet/DaemonSet/Job structure
-- Probe structure, Security context, RBAC, HPA, Scheduling, and more
+Kind and parent-key awareness come from the prediction targets, not the input — this prevents residual shortcutting (see [design rationale](docs/next-training-improvements.md)).
 
 ## Usage
 
-### Train on local YAML files
+### Train
 
 ```bash
-python train.py
+# Quick test (5K docs, 10 epochs)
+PYTHONPATH=. python scripts/train.py --max-docs 5000 --epochs 10 --output-dir output_quick
+
+# Full training (276K docs, 30 epochs)
+PYTHONPATH=. python scripts/train.py --max-docs 0 --epochs 30 --batch-size 64 --output-dir output_v5
 ```
 
-### Train on HuggingFace dataset
+The training script auto-downloads the dataset from HuggingFace on first run.
+
+### Run all evaluations
 
 ```bash
-python train_hf.py --max-docs 1000 --epochs 10           # quick test
-python train_hf.py --max-docs 0 --full --epochs 30       # full training
+./scripts/run_all_tests.sh <checkpoint> <vocab>
+# Example:
+./scripts/run_all_tests.sh output_v5/checkpoints/yaml_bert_v4_epoch_30.pt output_v5/vocab.json
 ```
 
-### Evaluate a checkpoint
+Runs: unit tests, 93 capability tests, 9 structural tests, document similarity, embedding structure analysis, and missing field suggestions.
+
+### Suggest missing fields
 
 ```bash
-python evaluate_checkpoint.py output_v1/checkpoints/yaml_bert_epoch_10.pt
+PYTHONPATH=. python scripts/suggest_fields.py <checkpoint> --vocab <vocab> --yaml-file my-deployment.yaml
 ```
 
-### Run capability tests
-
-```bash
-python test_capabilities.py output_v1/checkpoints/yaml_bert_epoch_10.pt
+Example output:
 ```
-
-### Anomaly detection
-
-```bash
-python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --yaml-file my_manifest.yaml
-python anomaly_score.py output_v1/checkpoints/yaml_bert_epoch_10.pt --run-examples
-```
-
-### Visualize attention patterns
-
-```bash
-python visualize_attention.py output_v1/checkpoints/yaml_bert_epoch_10.pt
-```
-
-### Visualize tree embeddings
-
-```bash
-python visualize_tree.py output_v1/checkpoints/yaml_bert_epoch_10.pt
+spec:
+    [100.0%] strategy (STRONG)
+spec.template.spec.containers.0.resources:
+    [ 99.9%] requests (STRONG)
+metadata:
+    [ 93.1%] labels (STRONG)
 ```
 
 ## Project Structure
 
 ```
-yaml_bert/
-    types.py            # YamlNode, NodeType
-    linearizer.py       # YAML to linearized tree nodes
-    vocab.py            # Separate key/value vocabularies
-    annotator.py        # Domain annotations (list ordering)
-    config.py           # Centralized hyperparameters
-    embedding.py        # Tree positional encoding (the novel part)
-    model.py            # Transformer encoder + key prediction head
-    dataset.py          # Dataset with key-only masking
-    trainer.py          # Training loop with checkpoint resume
-    evaluate.py         # Accuracy, embedding analysis, top-k predictions
-    visualize.py        # Loss curves, embedding similarity, attention heatmaps
+yaml_bert/               # Core library
+    types.py             # YamlNode, NodeType
+    linearizer.py        # YAML string -> linearized tree nodes
+    vocab.py             # Key/value/target vocabularies with hybrid targets
+    annotator.py         # Domain annotations (list ordering)
+    config.py            # Hyperparameters (d_model=256, layers=6, heads=8)
+    embedding.py         # Tree positional encoding
+    model.py             # Transformer encoder + dual prediction heads
+    dataset.py           # Dataset with key-only masking
+    trainer.py           # Training loop with NaN skip and gradient clipping
+    suggest.py           # Missing field suggestion tool
+    similarity.py        # Document embedding extraction
+    pooling.py           # Attention pooling for document embeddings
+
+scripts/                 # Training and evaluation scripts
+    train.py             # Main training script
+    train_service.sh     # Auto-resume training for systemd
+    suggest_fields.py    # CLI for missing field suggestions
+    test_similarity.py   # Document similarity matrix
+    test_embedding_structure.py  # Learned embedding analysis
+    run_all_tests.sh     # Run all evaluations
+
+model_tests/             # Behavioral tests
+    test_capabilities.py # 93 capability tests (CheckList methodology)
+    test_structural.py   # 9 structural tests
+
+tests/                   # Unit tests (81% coverage on core code)
+testdata/                # Sample K8s YAMLs for testing
 ```
 
 ## Documentation
 
 - [Tree Positional Encoding Explained](docs/tree-positional-encoding-explained.md) — mathematical foundations
-- [Phase 1 Tokenizer Design](docs/superpowers/specs/2026-03-28-yaml-tokenizer-design.md)
-- [Phase 2 Model Design](docs/superpowers/specs/2026-03-28-tree-encoding-model-design.md)
-- [Kind Embedding Design](docs/superpowers/specs/2026-03-29-kind-embedding-design.md) (next)
+- [Architecture](docs/architecture.md) — design decisions
+- [Capability Test Results](docs/capability-test-results.md) — full test output
+- [Next Training Improvements](docs/next-training-improvements.md) — planned experiments
+- [Development Plans](docs/superpowers/) — AI-assisted planning docs (built with Claude Code)
 
 ## Requirements
 
@@ -145,6 +163,8 @@ pip install -r requirements.txt
 
 - Python 3.10+
 - PyTorch >= 2.0
-- PyYAML
-- matplotlib
-- datasets (HuggingFace)
+- PyYAML, tqdm, datasets (HuggingFace)
+
+## License
+
+MIT — see [LICENSE](LICENSE).
