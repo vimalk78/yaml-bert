@@ -4,7 +4,7 @@ Issues and ideas discovered during evaluation of the v4 model (epoch 15, 276K do
 
 ---
 
-## 1. Don't Apply min_freq to Kind Values
+## ~~1. Don't Apply min_freq to Kind Values~~ DONE
 
 **Problem:** Rare kinds like `Binding`, `CSINode`, `Event`, `Eviction`, `FlowSchema`, `Lease`, `TokenReview` map to `[UNK]` in the value vocabulary because they appear fewer than 100 times. The model can't distinguish these kinds from each other — they all share the same `[UNK]` embedding.
 
@@ -16,7 +16,7 @@ Issues and ideas discovered during evaluation of the v4 model (epoch 15, 276K do
 
 ---
 
-## 2. Case Normalization for Kind Values
+## ~~2. Case Normalization for Kind Values~~ DONE
 
 **Problem:** The value vocabulary has separate entries for `ConfigMap`, `configmap`, and `configMap`. These are the same kind but get different embeddings. The model can't connect them — a YAML with `kind: configmap` gets a completely different representation than `kind: ConfigMap`.
 
@@ -85,8 +85,8 @@ Where `tree_bias` is a learned bias based on the tree relationship between posit
 
 ## Priority Order
 
-1. **Kind value fixes** (items 1 and 2) — easy, high impact, vocab rebuild only
-2. **More epochs** (item 4) — just change a number
+1. ~~**Kind value fixes** (items 1 and 2) — easy, high impact, vocab rebuild only~~ DONE (v5 training)
+2. ~~**More epochs** (item 4) — just change a number~~ DONE (30 epochs on L4)
 3. **Sine/cosine depth init** (item 3) — easy to implement, retrain needed
 4. **Deeper trigrams** (item 5) — needs analysis first
 5. **Tree attention bias** (item 6) — significant architecture change, defer
