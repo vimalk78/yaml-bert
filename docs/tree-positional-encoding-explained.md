@@ -104,6 +104,8 @@ Instead, parent and kind information appear in the **prediction target**: the mo
 
 Every distinct combination of (depth, sibling, type) produces a distinct vector, provided the component embeddings are linearly independent. Learned embeddings naturally become linearly independent during training — gradient descent pushes them apart to reduce loss.
 
+> **Verified:** All 320 tested TPE vectors (10 depths x 8 siblings x 4 types) are distinct. All three embedding tables have full matrix rank. See [TPE claims verification](tpe-claims-verification.md).
+
 For example, these two nodes get distinct encodings:
 
 ```
@@ -137,7 +139,7 @@ TPE(deep nested value) = depth_emb(4) + sibling_emb(3) + type_emb(VALUE)
 
 More shared components means higher dot product, which means stronger attention between structurally related nodes.
 
-> **Empirical note:** Our [embedding structure analysis](../scripts/test_embedding_structure.py) verifies this partially — nodes sharing 2 of 3 components have cosine similarity ~0.63, while nodes sharing 0 components have ~0.0. However, *which* two components are shared doesn't matter much — siblings are not more similar than other pairs that share two components.
+> **Verified:** Monotonic decrease in similarity as shared components decrease: 3 shared = 1.0, 2 shared = 0.64 avg, 1 shared = 0.29 avg, 0 shared = -0.16. However, *which* two components are shared doesn't matter much — siblings are not more similar than other 2-shared-component pairs. See [TPE claims verification](tpe-claims-verification.md).
 
 ### 3. Decomposability in Attention
 
@@ -162,6 +164,8 @@ The W_Q and W_K matrices learn which cross-terms matter. Different attention hea
 
 This decomposability means the model doesn't need separate mechanisms for different tree relationships — the multi-head attention with additive positional encoding can learn them all through the same linear algebra.
 
+> **Verified:** 28 of 48 attention heads show depth specialization (>2x bias toward same-depth nodes). Layer 3 Head 4 attends 14.5x more to same-depth nodes. Only 1 head shows type specialization — the model relies heavily on depth for structural attention. See [TPE claims verification](tpe-claims-verification.md).
+
 ### 4. What We Lose Compared to Sinusoidal
 
 Sinusoidal sequential encoding has one property our learned tree encoding does not guarantee: **translational equivariance in depth**.
@@ -184,15 +188,15 @@ This suggests the model found categorical depth (each level is a distinct contex
 
 ## Comparison Table
 
-| Property | Sequential (Sinusoidal) | Tree (Learned Additive) |
-|----------|------------------------|------------------------|
-| Position space | 1D integer | Multi-dimensional (depth, sibling, type) |
-| Encoding method | Deterministic sine/cosine | Learned embedding per component, summed |
-| Uniqueness | Yes (by construction) | Yes (learned; linearly independent embeddings) |
-| Distance-sensitivity | Yes (dot product decreases with distance) | Yes (more shared components = higher dot product) |
-| Relative position | Built-in via rotation matrices | Learned by attention heads from cross-terms |
-| Extrapolation | Yes (works for unseen positions) | Limited (unseen depths clamped to max) |
-| Structural relationships | "k positions away" = rotation | "same depth", "sibling", "same type" = learned via cross-terms |
+| Property | Sequential (Sinusoidal) | Tree (Learned Additive) | Verified? |
+|----------|------------------------|------------------------|-----------|
+| Position space | 1D integer | Multi-dimensional (depth, sibling, type) | — |
+| Encoding method | Deterministic sine/cosine | Learned embedding per component, summed | — |
+| Uniqueness | Yes (by construction) | Yes — full rank embeddings, 320/320 vectors distinct | PASS |
+| Distance-sensitivity | Dot product decreases with distance | 3 shared=1.0, 2=0.64, 1=0.29, 0=-0.16 | PASS |
+| Decomposability | Built-in via rotation matrices | 28/48 heads depth-specialized, max 14.5x bias | PASS |
+| Extrapolation | Works for unseen positions | Limited — unseen depths clamped to max | — |
+| Depth structure | Smooth (nearby positions similar) | Categorical — adjacent depths are orthogonal, not smooth | [Tested](../scripts/test_embedding_structure.py) |
 
 ## The One-Sentence Summary
 
