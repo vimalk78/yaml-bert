@@ -1,0 +1,8 @@
+[run]
+omit =
+    yaml_bert/cache.py
+    yaml_bert/trainer.py
+    yaml_bert/suggest.py
+    yaml_bert/similarity.py
+    yaml_bert/evaluate.py
+    yaml_bert/visualize.py

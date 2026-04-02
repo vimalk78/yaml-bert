@@ -6,3 +6,8 @@ __pycache__/
 *.pt
 token_counts.json
 output*/
+
+# Data (downloaded or generated at runtime)
+cluster-yamls/
+*.pkl
+*.txt
