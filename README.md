@@ -152,6 +152,7 @@ testdata/                # Sample K8s YAMLs for testing
 - [Tree Positional Encoding Explained](docs/tree-positional-encoding-explained.md) — mathematical foundations
 - [Architecture](docs/architecture.md) — design decisions
 - [Evaluation Results](docs/evaluation-results.md) — capability tests, similarity, TPE verification
+- [Suggest Demo](docs/suggest-demo.md) — missing field suggestion walkthrough with example
 - [Next Training Improvements](docs/next-training-improvements.md) — planned experiments
 - [Development Plans](docs/superpowers/) — AI-assisted planning docs (built with Claude Code)
 
