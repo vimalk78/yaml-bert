@@ -126,6 +126,52 @@ def main() -> None:
 
     # ================================================================
     print(f"\n{'=' * 60}")
+    print("  Tree Positional Encoding: Sibling vs Non-Sibling Similarity")
+    print("=" * 60)
+    print(f"\n  Claim: siblings (same depth, same type, different sibling index)")
+    print(f"  should have more similar TPE vectors than non-siblings.")
+    print()
+
+    # Siblings: same depth, same type, different sibling
+    # TPE = depth_emb + sibling_emb + type_emb
+    type_key = node_type_emb[0]  # KEY=0
+
+    # Sibling pair: both at depth 2, both KEY, sibling 0 vs 1
+    tpe_sib_a = depth_emb[2] + sibling_emb[0] + type_key
+    tpe_sib_b = depth_emb[2] + sibling_emb[1] + type_key
+    sib_sim = cosine_sim(tpe_sib_a, tpe_sib_b)
+
+    # Non-sibling pair: different depth, same type, same sibling
+    tpe_nonsib_a = depth_emb[1] + sibling_emb[0] + type_key
+    tpe_nonsib_b = depth_emb[4] + sibling_emb[0] + type_key
+    nonsib_sim = cosine_sim(tpe_nonsib_a, tpe_nonsib_b)
+
+    # Cross-type pair: same depth, same sibling, KEY vs VALUE
+    type_val = node_type_emb[1]  # VALUE=1
+    tpe_cross_a = depth_emb[2] + sibling_emb[0] + type_key
+    tpe_cross_b = depth_emb[2] + sibling_emb[0] + type_val
+    cross_sim = cosine_sim(tpe_cross_a, tpe_cross_b)
+
+    # Completely different: different depth, different sibling, different type
+    tpe_diff_a = depth_emb[0] + sibling_emb[0] + type_key
+    tpe_diff_b = depth_emb[4] + sibling_emb[3] + type_val
+    diff_sim = cosine_sim(tpe_diff_a, tpe_diff_b)
+
+    print(f"  {'Pair':<55} {'Cosine Sim':>10}")
+    print(f"  {'-'*55} {'-'*10}")
+    print(f"  {'Siblings (depth=2, KEY, sib 0 vs 1)':<55} {sib_sim:>10.4f}")
+    print(f"  {'Same type+sib, different depth (depth 1 vs 4)':<55} {nonsib_sim:>10.4f}")
+    print(f"  {'Same depth+sib, KEY vs VALUE':<55} {cross_sim:>10.4f}")
+    print(f"  {'Completely different (depth 0/KEY/sib0 vs depth 4/VAL/sib3)':<55} {diff_sim:>10.4f}")
+
+    print()
+    if sib_sim > nonsib_sim and sib_sim > diff_sim:
+        print(f"  --> Siblings ARE more similar than non-siblings (claim verified)")
+    else:
+        print(f"  --> Siblings are NOT clearly more similar (claim NOT verified)")
+
+    # ================================================================
+    print(f"\n{'=' * 60}")
     print("  Embedding Norms")
     print("=" * 60)
     print(f"\n  Do frequently used embeddings have larger norms?")

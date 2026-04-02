@@ -121,25 +121,23 @@ The dot product between two nodes' encodings reflects their structural similarit
 TPE(node_i) . TPE(node_j) = sum of dot products across all component pairs
 ```
 
-**Siblings** (same parent, same depth, same type) share two of three components:
+**Siblings** (same depth, same type, different sibling index) share two of three components:
 
 ```
 TPE(name at depth 4)  = depth_emb(4) + sibling_emb(0) + type_emb(KEY)
 TPE(image at depth 4) = depth_emb(4) + sibling_emb(1) + type_emb(KEY)
 ```
 
-These share depth and type — they differ only in sibling. Their dot product is high.
-
-**Distant nodes** (different subtrees) differ in depth and possibly type:
+**Distant nodes** (different subtrees) share fewer components:
 
 ```
-TPE(name under metadata)    = depth_emb(1) + sibling_emb(0) + type_emb(KEY)
-TPE(name under containers)  = depth_emb(4) + sibling_emb(0) + type_emb(KEY)
+TPE(root key)         = depth_emb(0) + sibling_emb(0) + type_emb(KEY)
+TPE(deep nested value) = depth_emb(4) + sibling_emb(3) + type_emb(VALUE)
 ```
 
-These differ in depth. Their dot product is lower (assuming learned depth embeddings are not aligned, which our embedding structure analysis confirms — depth embeddings are nearly orthogonal).
+More shared components means higher dot product, which means stronger attention between structurally related nodes.
 
-**This property emerges naturally from the additive structure**: more shared components means higher similarity, which means stronger attention between structurally related nodes.
+> **Empirical note:** Our [embedding structure analysis](../scripts/test_embedding_structure.py) verifies this partially — nodes sharing 2 of 3 components have cosine similarity ~0.63, while nodes sharing 0 components have ~0.0. However, *which* two components are shared doesn't matter much — siblings are not more similar than other pairs that share two components.
 
 ### 3. Decomposability in Attention
 
