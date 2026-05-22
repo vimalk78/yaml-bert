@@ -205,55 +205,105 @@ via deletion rather than weighting.
 - Lever 2 (loss reweighting) achieves a similar outcome without throwing
   away data. Prefer Lever 2 unless reweighting proves insufficient.
 
-## Recommended stacking and phased plan
+## Phase 1 — the active plan
 
-Each lever addresses a distinct failure mode (mapped to gaps in
-[`test-design-bigger-boat.md`](./test-design-bigger-boat.md)).
-They compose cleanly.
+The three levers below address two of the three failure modes identified
+in Context. They are independent and compose cleanly (see Open Questions
+for why). All three are dataset/vocab changes — no model architecture
+changes — so they can be implemented and trained as one v6.1 sweep.
 
-| Lever | Targeted gap |
-|---|---|
-| 1. Selective masking | Gap 1 (status completion) |
-| 2. Loss reweighting | Indirect — rebalances training pressure |
-| 3. Per-parent min_freq | (helps annotation-key recall; not a top-listed gap) |
-| 4. Annotation head | (same) |
-| 5. CRD doc-size cap | Indirect / fallback if Lever 2 insufficient |
-| 6. apiVersion-aware kind head | Gap 2 (API version awareness) |
+| Lever | Targeted gap (per [`test-design-bigger-boat.md`](./test-design-bigger-boat.md)) | Cost |
+|---|---|---|
+| **1. Selective masking** | Gap 1 (status completion) | ~5 lines in dataset.py |
+| **2. Loss reweighting** (`1/sqrt(doc_size)`) | CRD token dominance (Context #2) | ~15 lines across trainer.py + collate_fn |
+| **6. apiVersion-aware kind head** | Gap 2 (API version awareness) | ~20 lines in vocab.py + dataset.py |
 
-### Phase 1 (cheapest, biggest signal)
-- **Lever 1** (selective masking) — 5 lines, addresses status blind spot
-- **Lever 2** (loss reweighting, `1 / sqrt(doc_size)`) — 15 lines,
-  addresses CRD token dominance
-- **Lever 6** (apiVersion-aware kind head) — 20 lines, addresses API-
-  version blind spot
+### v6.1 implementation checklist
 
-Re-train v6.1 with these three. Measure against an expanded bigger-boat
-(see test-design doc for the 6 gaps and ~20–25 new tests). Expected:
-- Gap 1 (status): 0/8 → ≥6/8
-- Gap 2 (API version): unmeasured → ≥50%
-- crd_pollution unchanged (4/4 stays)
-- capability suite unchanged (93/93 stays)
+1. **Implement Lever 1** — `dataset._getitem_v4`: encode target before
+   masking; skip position if target id is `[UNK]`. Add unit test.
+2. **Implement Lever 6** — `Vocabulary.encode_kind_target`: prepend
+   apiVersion to the trigram; widen `kind_target_vocab`. Rebuild vocab
+   from the existing cache. Add unit test.
+3. **Implement Lever 2** — `trainer.YamlBertTrainer.train`: compute
+   per-doc weight `1/sqrt(len(doc))` in `collate_fn`, multiply into
+   `loss_fn` per-position before reduction. Add unit test.
+4. **Smoke run** — 5K quick mode, one seed. Confirms convergence
+   behavior and that no NaNs appear from the new weighting.
+5. **Full run** — 276K full corpus, 30 epochs on L4 (or scale-down
+   match the v5 hyperparameters).
 
-### Phase 2 (architecture change)
-- **Lever 3** (per-parent-path min_freq for annotations)
-- **Lever 4** (separate annotation_head)
+### v6.1 evaluation rubric
 
-These pair. Re-train v6.2. Measure new annotation-key tests.
+Compare on:
+- **Existing capability tests** (`test_capabilities.py`) — must stay at
+  93/93. Any regression below 90/93 is a hard fail.
+- **Existing structural tests** (`test_structural.py`) — v5 was 6/9.
+  Target: 8+/9 (status failures closed).
+- **Expanded bigger boat** (per test-design doc, ~25 tests across 6
+  gaps). Per-gap thresholds:
+  - Gap 1 (status): 0/8 → **≥ 6/8**
+  - Gap 2 (API version): unmeasured → **≥ 50%**
+  - Gap 4 (CRD-instance): unmeasured → **≥ 50%** (OOV; lower bar)
+  - Gap 5 (OOD calibration): partial → **≥ 75%**
+  - crd_pollution: **stay at 4/4** (no regression)
+- **suggest_fields wrong-level rate** — track as a diagnostic; not
+  expected to improve from these levers (motivates v7 tree-bias work).
 
-### Skip for now
-- **Lever 5** — Lever 2 likely makes it unnecessary. Reserve as fallback.
+## Deferred — revisit only if Phase 1 leaves gaps
 
-## Open questions
+These were earlier proposals that we've chosen not to pursue actively in
+Phase 1.
 
-1. **Selective masking + loss reweighting interaction.** Need to confirm
-   they compose without surprises.
-2. **`1 / size` vs `1 / sqrt(size)` weighting.** Empirical question.
-3. **Annotation head size.** Threshold for inclusion in annotation_target_vocab?
-   Suggest min_freq=5 for annotation, but worth measuring vocab-size
-   tradeoffs.
-4. **CRD-instance test corpus.** Need real CRD *instances* (deployed
-   custom resources) to evaluate v6 on the "did we lose CRD-instance
-   generalization" question.
+### Lever 3 — Per-parent-path min_freq
+### Lever 4 — Separate `annotation_head`
+
+Both target annotation/label key handling. Deferred because:
+- Existing bigger-boat tests on annotation keys (`app.kubernetes.io/*`,
+  `prometheus.io/*`) pass on v5. The model already handles common
+  annotations reasonably.
+- The long-tail of truly novel annotations needs sub-tokenization to
+  fix properly — a v7 concern.
+- Adding a third head increases architectural complexity for a failure
+  mode that didn't make the top-6 gap list.
+
+If v6.1 evaluation shows annotation handling has become a top gap, we
+revisit. Otherwise these levers remain documented but unimplemented.
+
+### Lever 5 — CRD doc-size cap
+
+Hard truncation of CRDs to N tokens at cache build. Deferred as
+**fallback only**: Lever 2 (loss reweighting) achieves similar
+rebalancing without destroying CRD structural content. Use this only if
+Lever 2 proves insufficient on the CRD-instance test corpus.
+
+## Open questions — resolved
+
+1. **Lever 1 + Lever 2 composition.** *Resolved: clean compose.* They
+   operate at different stages — Lever 1 selects masked positions, Lever
+   2 weights resulting per-token loss. Side effect: effective masking
+   rate drops from 15% to ~14.2% (5.5% of positions skipped). One extra
+   epoch can compensate if convergence becomes a concern.
+2. **`1/size` vs `1/sqrt(size)`.** *Resolved: start with `1/sqrt(size)`.*
+   Rebalances CRD:Deployment ratio from 15:1 to ~4:1 — substantial
+   without going all the way to 1:1 (which might be too aggressive).
+   Flip to `1/size` in a follow-up only if `1/sqrt` is insufficient.
+3. **Annotation handling specifics.** *Moot.* Levers 3 and 4 are
+   deferred from active Phase 1.
+4. **CRD-instance test corpus.** *Resolved: hand-write 4–6 manifests.*
+   No need to scrape. Common Operator patterns are well-documented:
+   `Prometheus`, `ServiceMonitor`, `Certificate`/`Issuer`,
+   `Application`, `Pipeline`. Cost: ~half day to draft and verify they
+   linearize cleanly.
+
+## Remaining unknowns (to discover during v6.1 evaluation)
+
+- Whether `1/sqrt(doc_size)` actually rebalances enough on the CRD-
+  instance test set, or whether `1/size` (or Lever 5 fallback) is needed.
+- Whether the smaller per-epoch supervision from Lever 1 requires
+  bumping epochs from 30 to e.g. 32 to match v5's convergence point.
+- Whether the wider `kind_target_vocab` (from Lever 6) adds noise that
+  hurts other categories — most likely no, but worth confirming.
 
 ## How we'll know if v6 worked
 
@@ -274,10 +324,12 @@ See [`test-design-bigger-boat.md`](./test-design-bigger-boat.md) for the
    even though it's not directly improved by these levers (it motivates
    v7 tree-attention work).
 
-## Decision required
+## Decision — committed scope
 
-Which subset of Phase 1 / Phase 2 do we want to commit to building? My
-recommendation is to start with Lever 1 alone, in 5K quick-mode, against
-the existing ablation pipeline — that's a sub-hour experiment that tells
-us whether selective masking actually moves status-side metrics. If it
-does, Phase 1 in full becomes the v6 commitment.
+**Build Phase 1 (Levers 1, 2, 6) together as v6.1.** Implement, train at
+5K-quick-mode first for a sanity pass, then full 276K × 30 epochs.
+
+Evaluate against the rubric above. If Phase 1 succeeds (most gaps hit
+their thresholds), v6.1 ships and we plan v7. If specific gaps remain
+(e.g., annotation handling becomes the dominant remaining weakness),
+revisit Levers 3 and/or 4.
