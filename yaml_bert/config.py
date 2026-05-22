@@ -15,6 +15,9 @@ class YamlBertConfig:
     max_depth: int = 16
     max_sibling: int = 32
 
+    # Ablation control
+    pos_encoding: str = "full_tree"  # full_tree, depth_only, sibling_only
+
     # Training
     mask_prob: float = 0.15
     lr: float = 1e-4

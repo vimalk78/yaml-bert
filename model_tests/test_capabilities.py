@@ -2802,7 +2802,108 @@ def _check_assertions(
     return TestResult(test.name, passed, "; ".join(details), predictions)
 
 
+def evaluate_model(
+    model: YamlBertModel,
+    vocab: Vocabulary,
+    verbose: bool = False,
+    print_header: bool = True,
+) -> dict:
+    """Run all capability tests on a pre-loaded model.
+
+    This is the reusable version for ablations and external scripts.
+    """
+    if print_header:
+        print(f"YAML-BERT Capability Tests")
+        print(f"{'=' * 70}\n")
+
+    torch.manual_seed(42)
+    model.eval()
+
+    capabilities: list[Capability] = build_capabilities()
+    total_tests: int = 0
+    total_passed: int = 0
+    cap_results: list[tuple[str, str, int, int]] = []
+
+    for cap in capabilities:
+        cap_passed: int = 0
+        cap_total: int = len(cap.tests)
+
+        if print_header:
+            print(f"CAPABILITY: {cap.name}")
+            print(f"  {cap.description}")
+
+        for test in cap.tests:
+            result: TestResult = run_test(model, vocab, test)
+            total_tests += 1
+            if result.passed:
+                total_passed += 1
+                cap_passed += 1
+            status: str = "PASS" if result.passed else "FAIL"
+
+            top1: str = result.predictions[0][0] if result.predictions else "?"
+            top1_conf: float = result.predictions[0][1] if result.predictions else 0.0
+            if print_header:
+                print(f"  [{status}] {result.test_name} — top: '{top1}' ({top1_conf:.1%})")
+                if verbose or not result.passed:
+                    print(f"         {result.details}")
+                    for i, (key, prob) in enumerate(result.predictions[:5]):
+                        print(f"           {i+1}. '{key}' ({prob:.2%})")
+
+        pct: float = cap_passed / cap_total * 100 if cap_total > 0 else 0
+        if print_header:
+            print(f"  Result: {cap_passed}/{cap_total} ({pct:.0f}%)\n")
+        cap_results.append((cap.name, cap.phase, cap_passed, cap_total))
+
+    # Summary
+    if print_header:
+        print(f"{'=' * 70}")
+        print(f"CAPABILITY COVERAGE SUMMARY")
+        print(f"{'=' * 70}")
+
+    pretrain_caps = [(name, passed, total) for name, phase, passed, total in cap_results if phase == "pretrain"]
+    finetune_caps = [(name, passed, total) for name, phase, passed, total in cap_results if phase == "finetune"]
+
+    pretrain_fully_passed = sum(1 for _, p, t in pretrain_caps if p == t)
+    pretrain_total_passed = sum(p for _, p, t in pretrain_caps)
+    pretrain_total_tests = sum(t for _, p, t in pretrain_caps)
+
+    result_dict = {
+        "pre_training_passed": pretrain_fully_passed,
+        "pre_training_total": len(pretrain_caps),
+        "pre_training_tests_passed": pretrain_total_passed,
+        "pre_training_tests_total": pretrain_total_tests,
+        "overall_rate": pretrain_total_passed / pretrain_total_tests if pretrain_total_tests > 0 else 0.0,
+    }
+
+    if print_header:
+        print("\n  Pre-training capabilities:")
+        for name, passed, total in pretrain_caps:
+            pct = passed / total * 100 if total > 0 else 0
+            status = "PASS" if passed == total else "PARTIAL" if passed > 0 else "FAIL"
+            print(f"    [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
+
+        if finetune_caps:
+            finetune_fully_passed = sum(1 for _, _, p, t in finetune_caps if p == t)
+            finetune_total_passed = sum(p for _, _, p, _ in finetune_caps)
+            finetune_total_tests = sum(t for _, _, _, t in finetune_caps)
+            print("\n  Fine-tuning capabilities (requires fine-tuned model):")
+            for name, passed, total in finetune_caps:
+                pct = passed / total * 100 if total > 0 else 0
+                status = "PASS" if passed == total else "PARTIAL" if passed > 0 else "FAIL"
+                print(f"    [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
+            result_dict["finetune_passed"] = finetune_fully_passed
+            result_dict["finetune_total"] = len(finetune_caps)
+
+        print(f"\nPre-training: {pretrain_fully_passed}/{len(pretrain_caps)} capabilities, {pretrain_total_passed}/{pretrain_total_tests} tests")
+        if finetune_caps:
+            print(f"Fine-tuning:  {finetune_fully_passed}/{len(finetune_caps)} capabilities, {finetune_total_passed}/{finetune_total_tests} tests")
+        print(f"{'=' * 70}")
+
+    return result_dict
+
+
 def main() -> None:
+    """Original CLI entrypoint."""
     parser = argparse.ArgumentParser()
     parser.add_argument("checkpoint", type=str)
     parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
@@ -2820,83 +2921,7 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    print(f"YAML-BERT Capability Tests — Epoch {checkpoint['epoch']}")
-    print(f"{'=' * 70}\n")
-
-    capabilities: list[Capability] = build_capabilities()
-    total_tests: int = 0
-    total_passed: int = 0
-    cap_results: list[tuple[str, int, int]] = []
-
-    for cap in capabilities:
-        cap_passed: int = 0
-        cap_total: int = len(cap.tests)
-
-        print(f"CAPABILITY: {cap.name}")
-        print(f"  {cap.description}")
-
-        for test in cap.tests:
-            result: TestResult = run_test(model, vocab, test)
-            total_tests += 1
-            if result.passed:
-                total_passed += 1
-                cap_passed += 1
-                status: str = "PASS"
-            else:
-                status = "FAIL"
-
-            top1: str = result.predictions[0][0] if result.predictions else "?"
-            top1_conf: float = result.predictions[0][1] if result.predictions else 0.0
-            print(f"  [{status}] {result.test_name} — top: '{top1}' ({top1_conf:.1%})")
-            if args.verbose or not result.passed:
-                print(f"         {result.details}")
-                for i, (key, prob) in enumerate(result.predictions[:5]):
-                    print(f"           {i+1}. '{key}' ({prob:.2%})")
-
-        pct: float = cap_passed / cap_total * 100 if cap_total > 0 else 0
-        print(f"  Result: {cap_passed}/{cap_total} ({pct:.0f}%)\n")
-        cap_results.append((cap.name, cap.phase, cap_passed, cap_total))
-
-    # Summary
-    print(f"{'=' * 70}")
-    print(f"CAPABILITY COVERAGE SUMMARY")
-    print(f"{'=' * 70}")
-
-    # Pre-training capabilities
-    pretrain_caps = [(n, p, t) for n, ph, p, t in cap_results if ph == "pretrain"]
-    finetune_caps = [(n, p, t) for n, ph, p, t in cap_results if ph == "finetune"]
-
-    pretrain_fully_passed: int = 0
-    pretrain_total_passed: int = 0
-    pretrain_total_tests: int = 0
-    print("\n  Pre-training capabilities:")
-    for name, passed, total in pretrain_caps:
-        pct = passed / total * 100 if total > 0 else 0
-        status = "PASS" if passed == total else "PARTIAL" if passed > 0 else "FAIL"
-        print(f"    [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
-        if passed == total:
-            pretrain_fully_passed += 1
-        pretrain_total_passed += passed
-        pretrain_total_tests += total
-
-    if finetune_caps:
-        finetune_fully_passed: int = 0
-        finetune_total_passed: int = 0
-        finetune_total_tests: int = 0
-        print("\n  Fine-tuning capabilities (requires fine-tuned model):")
-        for name, passed, total in finetune_caps:
-            pct = passed / total * 100 if total > 0 else 0
-            status = "PASS" if passed == total else "PARTIAL" if passed > 0 else "FAIL"
-            print(f"    [{status:>7}] {name}: {passed}/{total} ({pct:.0f}%)")
-            if passed == total:
-                finetune_fully_passed += 1
-            finetune_total_passed += passed
-            finetune_total_tests += total
-
-    print(f"\nPre-training: {pretrain_fully_passed}/{len(pretrain_caps)} capabilities, {pretrain_total_passed}/{pretrain_total_tests} tests")
-    if finetune_caps:
-        print(f"Fine-tuning:  {finetune_fully_passed}/{len(finetune_caps)} capabilities, {finetune_total_passed}/{finetune_total_tests} tests")
-    print(f"{'=' * 70}")
+    evaluate_model(model, vocab, verbose=args.verbose, print_header=True)
 
 
 if __name__ == "__main__":

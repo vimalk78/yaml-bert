@@ -1,0 +1,23 @@
+{
+  "full_tree": {
+    "pre_training_passed": 1,
+    "pre_training_total": 28,
+    "pre_training_tests_passed": 7,
+    "pre_training_tests_total": 93,
+    "overall_rate": 0.07526881720430108
+  },
+  "depth_only": {
+    "pre_training_passed": 0,
+    "pre_training_total": 28,
+    "pre_training_tests_passed": 6,
+    "pre_training_tests_total": 93,
+    "overall_rate": 0.06451612903225806
+  },
+  "sibling_only": {
+    "pre_training_passed": 0,
+    "pre_training_total": 28,
+    "pre_training_tests_passed": 4,
+    "pre_training_tests_total": 93,
+    "overall_rate": 0.043010752688172046
+  }
+}
