@@ -1,6 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class TreePosVariant(str, Enum):
+    """Tree positional encoding ablation variants."""
+
+    FULL = "full"             # depth + sibling + node_type (default)
+    NO_DEPTH = "no_depth"     # sibling + node_type
+    NO_SIBLING = "no_sibling" # depth + node_type
+    SEQUENTIAL = "sequential" # learned pos[seq_idx] + node_type
 
 
 @dataclass
@@ -14,6 +24,7 @@ class YamlBertConfig:
     d_ff: int = 0  # 0 means "auto: 4 * d_model"
     max_depth: int = 16
     max_sibling: int = 32
+    tree_pos_variant: TreePosVariant = TreePosVariant.FULL
 
     # Training
     mask_prob: float = 0.15

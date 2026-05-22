@@ -122,5 +122,6 @@ class YamlBertTrainer:
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "tree_pos_variant": self.config.tree_pos_variant.value,
         }, path)
         print(f"Checkpoint saved: {path}")

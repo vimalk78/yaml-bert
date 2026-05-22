@@ -12,7 +12,7 @@ import os
 import time
 
 from yaml_bert.cache import build_or_load_cache
-from yaml_bert.config import YamlBertConfig
+from yaml_bert.config import TreePosVariant, YamlBertConfig
 from yaml_bert.dataset import YamlDataset
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
@@ -30,6 +30,14 @@ def parse_args():
     parser.add_argument("--vocab-min-freq", type=int, default=10)
     parser.add_argument("--output-dir", type=str, default="output_v4")
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--tree-pos-variant",
+        type=str,
+        default=TreePosVariant.FULL.value,
+        choices=[v.value for v in TreePosVariant],
+        help="Tree positional encoding variant (ablation knob).",
+    )
     return parser.parse_args()
 
 
@@ -37,11 +45,23 @@ def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
+    import random
+    import numpy as np
+    import torch
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     max_docs = None if args.max_docs == 0 else args.max_docs
     config = YamlBertConfig(
         num_epochs=args.epochs,
         batch_size=args.batch_size,
+        tree_pos_variant=TreePosVariant(args.tree_pos_variant),
     )
+    print(f"Tree positional encoding variant: {config.tree_pos_variant.value}")
+    print(f"Seed: {args.seed}")
 
     # Step 0: Linearize (cached + parallel)
     cache_path = os.path.join(args.output_dir, "doc_cache.pkl")
