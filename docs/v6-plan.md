@@ -154,6 +154,38 @@ head consumes the lenient-min_freq vocab).
 - More moving parts in training. Multi-task balance becomes a tuning
   surface.
 
+### Lever 6 — apiVersion-aware kind head
+
+**What.** Currently `kind_head` predicts compound targets like
+`Deployment::spec::replicas` — conditioned on `kind` only. Extend the
+trigram target encoding to include `apiVersion`, producing targets like
+`apps/v1::Deployment::spec::replicas`. The dataset constructs the trigram
+from `(apiVersion, kind, parent, child)` at vocab-build time; the
+kind_head's output vocab grows to enumerate the versioned trigrams.
+
+**Why.** `next-training-improvements.md` mentioned deepening trigrams.
+The bigger-boat test design exposes a separate but related gap: the model
+has no test coverage for distinguishing equivalent kinds across API
+versions (`apps/v1` Deployment vs deprecated `apps/v1beta1`,
+`networking.k8s.io/v1` Ingress with required `pathType` vs the v1beta1
+variant without it, `autoscaling/v2` HPA with `metrics[]` vs
+`autoscaling/v1` with `targetCPUUtilizationPercentage`). Real corpora
+include all of these; v5 likely mixes them.
+
+**Cost.** ~20 lines: extend `Vocabulary.encode_kind_target` to include
+apiVersion as a prefix; widen `kind_target_vocab` accordingly; no model
+architecture changes.
+
+**Expected gain.** Closes Gap 2 in `test-design-bigger-boat.md`. The
+kind_head's output vocab doubles or so (versioned trigrams) — manageable.
+
+**Caveats.**
+- Larger kind_target_vocab. Each version-kind pair gets its own targets;
+  some will be sparse if a version is rare in training.
+- Shared backbone may still confuse `apps/v1::Deployment` and
+  `apps/v1beta1::Deployment` via similar tokens; the head decoding gets
+  them right but internal representations may stay entangled.
+
 ### Lever 5 — CRD doc-size cap (optional, more aggressive)
 
 **What.** During cache build, truncate each CRD document to the first N
@@ -175,16 +207,32 @@ via deletion rather than weighting.
 
 ## Recommended stacking and phased plan
 
-Each lever addresses a distinct failure mode. They compose cleanly.
+Each lever addresses a distinct failure mode (mapped to gaps in
+[`test-design-bigger-boat.md`](./test-design-bigger-boat.md)).
+They compose cleanly.
+
+| Lever | Targeted gap |
+|---|---|
+| 1. Selective masking | Gap 1 (status completion) |
+| 2. Loss reweighting | Indirect — rebalances training pressure |
+| 3. Per-parent min_freq | (helps annotation-key recall; not a top-listed gap) |
+| 4. Annotation head | (same) |
+| 5. CRD doc-size cap | Indirect / fallback if Lever 2 insufficient |
+| 6. apiVersion-aware kind head | Gap 2 (API version awareness) |
 
 ### Phase 1 (cheapest, biggest signal)
 - **Lever 1** (selective masking) — 5 lines, addresses status blind spot
 - **Lever 2** (loss reweighting, `1 / sqrt(doc_size)`) — 15 lines,
   addresses CRD token dominance
+- **Lever 6** (apiVersion-aware kind head) — 20 lines, addresses API-
+  version blind spot
 
-Re-train v6.1 with these two. Measure against bigger-boat. Expected:
-status tests should improve substantially; CRD pollution should remain
-controlled (it was already not visibly leaking).
+Re-train v6.1 with these three. Measure against an expanded bigger-boat
+(see test-design doc for the 6 gaps and ~20–25 new tests). Expected:
+- Gap 1 (status): 0/8 → ≥6/8
+- Gap 2 (API version): unmeasured → ≥50%
+- crd_pollution unchanged (4/4 stays)
+- capability suite unchanged (93/93 stays)
 
 ### Phase 2 (architecture change)
 - **Lever 3** (per-parent-path min_freq for annotations)
@@ -209,17 +257,22 @@ These pair. Re-train v6.2. Measure new annotation-key tests.
 
 ## How we'll know if v6 worked
 
-1. **Bigger-boat suite** (`model_tests/test_bigger_boat.py`):
-   - `vocab_gap` category should go from 0/4 → 3+/4
-   - `crd_pollution` should stay at 4/4 (no regression)
-   - `annotation_keys` should stay or improve
-   - `confidence_calib` should stay healthy
-2. **Capability tests** (`model_tests/test_capabilities.py`) should remain
-   at 93/93 — v6 should not regress what v5 already does well.
-3. **Structural tests** (`model_tests/test_structural.py`) — current v5 is
-   6/9. Expect v6 to close the 2 status-related failures: 8+/9.
-4. **CRD-instance smoke test** (new) — does the model still help when
-   editing a `Prometheus` or `Issuer` instance (not the CRD itself)?
+See [`test-design-bigger-boat.md`](./test-design-bigger-boat.md) for the
+6 gaps and per-gap pass thresholds. Briefly:
+
+1. **Existing capability tests** should remain at 93/93 — v6 should not
+   regress what v5 already does well.
+2. **Structural tests** — current v5 is 6/9. Expect v6 to close the
+   status failures: 8+/9.
+3. **Bigger boat (expanded to ~25 tests)** — per-gap targets:
+   - Gap 1 (status): 0/8 → ≥ 6/8
+   - Gap 2 (API version): unmeasured → ≥ 50%
+   - Gap 4 (CRD-instance): unmeasured → ≥ 50%
+   - Gap 5 (OOD calibration): partial → ≥ 75%
+   - crd_pollution: unchanged at 4/4
+4. **Suggest_fields wrong-level prediction rate** — track as a metric
+   even though it's not directly improved by these levers (it motivates
+   v7 tree-attention work).
 
 ## Decision required
 

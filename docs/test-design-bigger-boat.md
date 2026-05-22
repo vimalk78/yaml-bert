@@ -1,333 +1,242 @@
 # Bigger Boat — Test Design
 
-The current saturated capability suite (`test_capabilities.py`, 93/93) measures
-*basic structural recall* — does the model know `replicas` goes under `spec`?
-This passes for any reasonably-trained model.
+## Premise
 
-The bigger-boat suite must instead measure whether the model has learned the
-**operating semantics** of K8s YAML — the kind of understanding a competent
-operator brings to a manifest. This document enumerates the dimensions that
-"understands K8s YAML" actually covers, the test categories that probe each,
-and the difficulty floor each implies for the architecture.
+v5 passes 93/93 pretrain capability tests, 6/9 structural tests, and runs
+the `suggest_fields` tool with useful results on real manifests. Across
+all ablation variants (full, no_depth, no_sibling, sequential) the
+capability suite saturates at 91–93/93 — it can no longer differentiate
+trained models.
 
-## What a model that "knows K8s YAML" should be able to do
+The question this document answers: **what's actually missing from our
+test coverage that v6 should be designed to address?**
 
-1. **Structural recall** — basic key-to-parent mapping
-   (passing the existing capability suite; v5 ✓ 93/93)
-2. **Required-field awareness** — knows which keys are required vs optional
-   per kind; can complete missing required fields
-3. **Mutual exclusivity / conditional schemas** — knows which fields exclude
-   each other (e.g., probe types, env value sources)
-4. **API version awareness** — distinguishes equivalent kinds across versions
-   (e.g., `apps/v1` vs deprecated `apps/v1beta1`)
-5. **Defaulting behavior** — knows what gets defaulted when omitted
-   (e.g., `restartPolicy: Always` for Deployments)
-6. **Status-side recall** — predicts status keys, not just spec keys
-   (v5 ✗ — known gap)
-7. **Sibling cross-reference** — within one document, knows that paired
-   names must match (`volumes.name` ↔ `volumeMounts.name`)
-8. **Workload-pattern fluency** — recognizes common multi-container, sidecar,
-   initContainer patterns
-9. **Probe / volume / scheduling type completion** — knows the small enum
-   of valid types in each slot
-10. **RBAC structural consistency** — knows the constrained shape of rules,
-    verbs, resources, apiGroups
-11. **Long-tail kind handling** — handles kinds rarely seen in training
-12. **Annotation / label namespace awareness** — handles user-extensible
-    metadata slots reasonably
-13. **Calibration** — confident on clear, uncertain on ambiguous
-    (v5 ✓ on the few we tested)
-14. **Anti-pattern recognition** — flags `:latest` tags, missing health
-    checks, privileged containers (aspirational)
-15. **Cross-document referential consistency** — Service selector matches
-    Pod labels (architecturally out of scope for a single-doc model)
+The answer turns out to be much narrower than a naïve read suggests. The
+current test surface is dense; the gaps are specific.
 
-Items 14 and 15 are *aspirational* — out of reach for the current
-single-document encoder. The rest are reachable with current architecture
-and worth testing.
+## What we already have
 
-## Test categories — concrete proposals
+### `model_tests/test_capabilities.py` — 30 capabilities, 121+ tests
 
-For each, I list: what it probes, why it matters, 2–3 example tests, and
-difficulty floor (whether v5 likely passes/fails).
+Covers structural recall, kind conditioning, required fields (universal
++ kind-specific via *Kind-specific spec children*), wrong-context
+rejection (universal + kind-specific via *Kind-specific invalid structure
+rejection*), workload patterns (Multi-container awareness, Workload
+controller distinction, plus dedicated capabilities for StatefulSet,
+DaemonSet, Job, HPA), volume/probe/service-port enum completion,
+security context level-awareness, scheduling/affinity, RBAC structure,
+PV/PVC, Ingress, ConfigMap vs Secret, value-context sensitivity,
+container field completeness, annotation patterns.
 
-### Category A — Required-field completion (NEW)
+Two capabilities are flagged `phase="finetune"` — Invalid structure
+rejection and Kind-specific invalid structure rejection — both
+calibration-flavored (test that the model's confidence drops at wrong
+positions).
 
-**Probes:** item 2 (required-field awareness).
+### `model_tests/test_structural.py` — 9 hand-built tests
 
-**Why it matters:** the primary downstream use case is `suggest_fields` —
-"what's missing from my YAML?". A model that's confident here is directly
+Kind conditioning, wrong parent rejection, depth awareness, spec-vs-
+status, nonsense-YAML calibration, missing required field. v5 passes
+6/9; the 3 known failures are:
+- spec/status distinction (model predicts [UNK] at 99%)
+- one missing-field test
+- (third failure I should verify)
+
+### `model_tests/test_bigger_boat.py` — 13 tests across 4 categories
+
+Status-side completion (4 — all fail), CRD pollution (4 — all pass),
+annotation keys (2 — pass), confidence calibration (3 — pass). v5 scores
+9/13 = 69%.
+
+### `scripts/suggest_fields.py` — downstream tool
+
+Not a test but a working use case. Probes each parent level by inserting
+a synthetic `[MASK]` and reading predictions. Categorizes by confidence
+(STRONG/MODERATE/WEAK). Detects *wrong-level predictions* where the
+predicted compound target's parent doesn't match the probed position —
+this surfaces a real model weakness already.
+
+## What's actually missing
+
+Six narrow gaps, in rough order of importance:
+
+### Gap 1 — Systematic status-side completion
+
+**What we have:** 1 test in test_structural.py (fails); 4 tests in
+test_bigger_boat.py vocab_gap category (all fail). Confirmed [UNK]
+collapse for `Deployment.status.replicas`, `Pod.status.conditions`,
+`HPA.status.desiredReplicas`, `Service.status.loadBalancer.hostname`.
+
+**What's missing:** wider coverage across kinds and across the status
+subtree shape (conditions[i].type, containerStatuses[i].imageID,
+loadBalancer.ingress[i].ip, podIP/hostIP, capacity, succeeded/failed
+counters, etc.).
+
+**Why it matters:** the gap is real and measurable; addresses Lever 1
+in v6 plan; also the dominant downstream blind spot when developers want
+to write status-aware tooling on top of the model.
+
+**Tests to add:** 6–8 across `StatefulSet.status`, `Job.status`,
+`Pod.status.containerStatuses`, `Node.status.conditions`,
+`Service.status.loadBalancer.ingress`, `PVC.status.capacity`.
+
+### Gap 2 — API-version awareness
+
+**What we have:** nothing. No test capability mentions `apiVersion`
+variants. The `kind_head` is conditioned on `kind` alone, not on
+`apiVersion`.
+
+**Why it matters:** real corpora include deprecated API versions
+(`extensions/v1beta1` Ingress, `apps/v1beta1` Deployment, `autoscaling/v1`
+HPA with `targetCPUUtilizationPercentage` vs `autoscaling/v2` with the
+`metrics` array). The model probably mixes them.
+
+**Tests to add:** 3–4 paired tests — same kind under v1 vs vbeta1,
+verifying version-specific fields are predicted.
+
+**v6 plan implication:** add **Lever 6 — apiVersion-aware kind head**
+(see v6-plan.md update).
+
+### Gap 3 — Wrong-level / wrong-sibling predictions, scored
+
+**What we have:** `suggest_fields.py` detects this during probing
+("predicted parent doesn't match probed parent"), reports it in the demo
+output. But there is no test capability that scores wrong-level
+prediction rate as a metric.
+
+**Why it matters:** this is documented in `next-training-improvements.md`
+as motivating *Lever 6 in that doc — tree-aware attention bias*. Worth
+turning the detection into a scored test.
+
+**Tests to add:** 4–5 cases that mask at one position but provide a
+neighboring well-formed subtree; expect the predicted compound target's
+parent to match the probed parent.
+
+### Gap 4 — CRD-instance handling
+
+**What we have:** the corpus is heavy on CRD definitions (3% of docs,
+46% of training tokens). We have zero tests on CRD *instances* — the
+custom resources whose shape the CRDs define.
+
+**Why it matters:** users actually deploy these resources (Prometheus
+objects, cert-manager Issuers, ArgoCD Applications, Tekton Pipelines,
+etc.). If v6 reweighting changes how CRDs are seen during training, we
+need a way to check whether downstream behavior on CRD instances stays
 useful.
 
-**Example tests:**
-- Deployment with no `selector` → mask the position; expect top-1 `selector`
-  with high confidence
-- Pod with no `spec.containers` (only metadata) → expect `spec` or
-  `containers` highly ranked
-- Service with no `spec.ports` → expect `ports`
-- StatefulSet with no `serviceName` → expect `serviceName`
-- Job with neither `completions` nor `parallelism` → expect both in top-5
-- PersistentVolumeClaim with no `accessModes` → expect `accessModes`
+**Tests to add:** 4–6 manifests of common custom resources (with no
+schema content — just the instance), masked at typical positions.
 
-**Difficulty floor:** v5 should pass these on common kinds. Failure means
-the model only knows what fields *can* exist, not what *must* exist.
+**Caveat:** v5 has likely never seen these as instances; this is
+*genuine* OOV testing, not "we trained on it and want to confirm."
+Expectations should be lower (~50% pass rate is meaningful).
 
-### Category B — Mutually exclusive / conditional schemas (NEW)
+### Gap 5 — Adversarial OOD calibration
 
-**Probes:** item 3.
+**What we have:** test_structural.py #5 — nonsense YAML drops confidence
+from 100% to 66% — exactly one test.
 
-**Why it matters:** real schemas have "exactly one of" constraints. Models
-that don't know this produce confidently wrong suggestions.
-
-**Example tests:**
-- Container env from `valueFrom` already specifies `configMapKeyRef`; mask
-  the *sibling* position — should NOT suggest `secretKeyRef` or `fieldRef`
-- Pod with `nodeName` set; mask another position — should NOT suggest
-  `nodeSelector`
-- Liveness probe with `exec` set; mask sibling — should NOT suggest
-  `httpGet` or `tcpSocket`
-- Volume with `hostPath` set; mask sibling — should NOT suggest `emptyDir`,
-  `configMap`, etc.
-
-**Difficulty floor:** v5 likely fails some of these. The probe slot is
-particularly testable (3-way mutual exclusion).
-
-### Category C — Volume / probe / scheduling type completion (NEW)
-
-**Probes:** item 9 — enum completion in specific slots.
-
-**Example tests:**
-- Mask `httpGet` under `readinessProbe`; expect alternatives like `exec`,
-  `tcpSocket` in top-5
-- Mask `hostPath` under volumes; expect `emptyDir`, `persistentVolumeClaim`,
-  `configMap`, `secret`, `projected` in top-5
-- Mask `topologyKey` under affinity; expect `kubernetes.io/hostname`,
-  `topology.kubernetes.io/zone`
-
-**Difficulty floor:** medium. Tests whether the model has the *closed enum*
-internalized.
-
-### Category D — Status-side completion (EXISTS, expand)
-
-**Probes:** item 6.
-
-**Example tests already in v1 bigger boat (all fail on v5):**
-- `Deployment.status.replicas`, `Pod.status.conditions`,
-  `HPA.status.desiredReplicas`, `Service.status.loadBalancer.hostname`
-
-**Additional tests to add:**
-- `StatefulSet.status.currentReplicas` / `readyReplicas`
-- `Job.status.succeeded` / `failed` / `active`
-- `Pod.status.containerStatuses[].imageID`
-- `Node.status.conditions[].type` (DiskPressure, MemoryPressure, etc.)
-
-**Difficulty floor:** v5 fails all. The v6 plan's Lever 1 (selective
-masking) should close most.
-
-### Category E — API-version awareness (NEW)
-
-**Probes:** item 4.
-
-**Why it matters:** real manifests live across versions. Model should know
-the canonical version-specific fields.
-
-**Example tests:**
-- `apiVersion: networking.k8s.io/v1` Ingress: `pathType` is required;
-  v1beta1 doesn't have it
-- `apiVersion: autoscaling/v2` HPA: `metrics` array; `autoscaling/v1` has
-  `targetCPUUtilizationPercentage` instead
-- `apiVersion: apps/v1` Deployment: `selector` required; older versions
-  defaulted it
-
-**Difficulty floor:** medium-hard. v5 might fail when the rarer version
-appears.
-
-### Category F — Sibling cross-reference (NEW)
-
-**Probes:** item 7 — within-doc referential consistency.
-
-**Example tests:**
-- Mask `volumeMounts[i].name` after volumes have been declared with name
-  "config", "data" — expect those exact strings in top-5
-- Mask `secretKeyRef.name` after a Secret has been referenced earlier in
-  the same doc — expect that exact name
-
-**Difficulty floor:** hard for current architecture (it's a key-prediction
-model, not a copy-from-context model). Likely fails — but quantifying the
-gap motivates v7 features.
-
-### Category G — Workload-pattern fluency (NEW)
-
-**Probes:** item 8.
-
-**Example tests:**
-- Deployment with `initContainers` + main `containers` + `volumes` — mask
-  positions in each section, all should be appropriately predicted
-- Pod with sidecar container (multi-`containers`) — verify model handles
-  per-container `env`, `volumeMounts`, `resources`
-- StatefulSet with `volumeClaimTemplates` (different from regular `volumes`)
-- DaemonSet (no `replicas`!) — model should NOT suggest replicas
-
-**Difficulty floor:** v5 likely passes the common ones; the DaemonSet
-"don't suggest replicas" test is interesting.
-
-### Category H — RBAC consistency (NEW)
-
-**Probes:** item 10.
-
-**Example tests:**
-- Role with `rules` declared; mask `verbs` — expect `get`, `list`, `watch`,
-  `create`, `update`, `patch`, `delete` in top-5 (verb enum)
-- Role with `apiGroups: [""]`; mask `resources` — expect `pods`, `services`,
-  `configmaps`, ... (core API resources)
-- RoleBinding `subjects[].kind` — expect `ServiceAccount`, `User`, `Group`
-
-**Difficulty floor:** medium. RBAC was 4.7% of v5's training (ClusterRole
-+ Role + bindings ≈ 10%), so model should know the closed enums.
-
-### Category I — Long-tail kinds (NEW)
-
-**Probes:** item 11.
-
-**Example tests:**
-- NetworkPolicy with `policyTypes: [Ingress, Egress]` (NetworkPolicy was
-  0.6% of training)
-- PodDisruptionBudget with `minAvailable` and `selector`
-- ResourceQuota with `hard` map
-- LimitRange with `limits` array containing type-specific defaults
-
-**Difficulty floor:** unknown. Some long-tail kinds might have surprising
-gaps.
-
-### Category J — Annotation / label namespace (EXISTS, expand)
-
-**Probes:** item 12. Current bigger boat has 2 tests; expand to ~5.
-
-**Examples to add:**
-- `helm.sh/chart`, `helm.sh/hook`, `helm.sh/hook-weight`
-- `argocd.argoproj.io/sync-wave`, `argocd.argoproj.io/sync-options`
-- `meta.helm.sh/release-name`
-- `kubernetes.io/ingress.class` (deprecated path)
-- Custom `mycompany.com/owner: team-x` style annotations (truly novel)
-
-**Difficulty floor:** v5 passes 2/2 today; novel annotations will fail
-until sub-tokenization (v7).
-
-### Category K — Calibration extremes (EXISTS, expand)
-
-**Probes:** item 13.
-
-**Tests to add:**
-- **Adversarially shaped YAML** — a Pod where `spec.containers` is replaced
-  by `spec.containres` (typo); mask the typo'd key. Expect the model to
-  suggest `containers` (typo correction) with > 50% confidence.
-- **Wildly out-of-distribution YAML** — non-K8s YAML (a Helm chart values
-  file, a CI config). Model should produce LOW confidence; not confidently
+**What's missing:**
+- **Typo correction** — `containres` instead of `containers`. Currently
+  the model has no chance because tokens are atomic; this test would
+  document a v7-sub-tokenization gap.
+- **Non-K8s YAML** — feed a Helm values file, a CI config, a docker-
+  compose. Model should produce LOW confidence; should not confidently
   emit K8s structural keys.
+- **Truncated YAML** — only first few lines (apiVersion + kind + half of
+  metadata). Predictions should still be reasonable.
 
-**Difficulty floor:** typo-correction is likely an honest failure (tokens
-are atomic — model won't see partial matches without sub-tokenization).
-OOD-confidence might pass.
+**Tests to add:** 3–4 OOD/adversarial cases.
 
-## Coverage of current bigger boat
+### Gap 6 — Confidence floors on existing tests
 
-The existing `test_bigger_boat.py` covers 4 categories partially:
+**What we have:** most capability tests use `expect_in_top5` without any
+confidence requirement. So a required field at rank 5 with 3% confidence
+passes the same as at rank 1 with 99%.
 
-| Category | Current count | Target for v6 |
+**Why it matters:** for the `suggest_fields` downstream use, top-5
+inclusion is too permissive. We want to know *how confident* the model is
+about required fields specifically.
+
+**What's missing:** tightened assertions on a subset of existing tests.
+Not new YAMLs — just stricter expectations on `expect_confidence_above`
+for tests of well-known required fields.
+
+**Cost:** ~20 lines of edits across existing capabilities, no new tests.
+
+## What's NOT missing (avoid duplicating)
+
+For honesty, here's what I previously thought was missing but actually
+exists:
+
+- **Universal required fields** — Capability 5, with high-confidence
+  thresholds already
+- **Kind-specific required fields** — capabilities 12–19 + 21
+  (Kind-specific spec children) cover StatefulSet.serviceName,
+  DaemonSet.updateStrategy, HPA.scaleTargetRef, PodDisruptionBudget,
+  StorageClass, ResourceQuota
+- **Mutual exclusivity** — capabilities 6 + 22 (Invalid structure
+  rejection variants) + Volume semantics + Probe structure handle this
+- **Volume / probe / service-port enum completion** — capabilities 11,
+  15, 17
+- **Workload patterns** — capabilities 9, 12, 13, 14, 25 + ConfigMap vs
+  Secret + Ingress + PV/PVC
+- **RBAC structure** — capability 10
+- **Long-tail kinds** — capabilities 19 (HPA), 25+ via Kind-specific
+  spec children additions (NetworkPolicy, PodDisruptionBudget,
+  StorageClass, ResourceQuota, etc.)
+- **Annotation keys (basic)** — capabilities 20 + 30
+
+## Sizing the buildout
+
+| Gap | New tests | Effort |
 |---|---|---|
-| D — status-side completion | 4 (all fail) | 8–10 |
-| Probably-CRD-pollution | 4 (all pass) | keep or drop |
-| J — annotation keys | 2 (pass) | 5–8 |
-| K — calibration | 3 (pass) | 6–8 (add typo + OOD) |
-| A — required fields | 0 | 6 |
-| B — mutual exclusivity | 0 | 5 |
-| C — type completion | 0 | 4 |
-| E — API version | 0 | 4 |
-| F — sibling cross-ref | 0 | 3 (likely fail, useful gap) |
-| G — workload patterns | 0 | 5 |
-| H — RBAC | 0 | 4 |
-| I — long-tail kinds | 0 | 4 |
+| 1. Status completion | 6–8 | ~1 day (handcrafting YAMLs) |
+| 2. API version | 3–4 | ~half day |
+| 3. Wrong-level (scored) | 4–5 | ~half day |
+| 4. CRD-instance | 4–6 | ~1 day (need real CRD instance examples) |
+| 5. Adversarial OOD | 3–4 | ~half day |
+| 6. Confidence floors | 0 new YAMLs | ~2 hours (tightening assertions) |
 
-Target for v6 evaluation: **~60 tests across 11 categories**.
+**Total: ~20–25 new tests over ~3 days of work.** Manageable, focused.
 
-## What v6 must pass — prioritized
+## Build order
 
-For each category, what would success look like and what's the architecture
-implication:
+Order by what most directly informs v6 evaluation:
 
-### Must pass (or v6 is a regression)
+1. **Gap 1 (status completion)** first — it's the failure mode v6 Lever 1
+   targets. Need a comprehensive measure to know if Lever 1 worked.
+2. **Gap 6 (confidence floors)** second — cheap, tightens existing tests,
+   raises the bar on what "passing" means before v6.
+3. **Gap 2 (API version)** — motivates adding Lever 6 to v6 plan.
+4. **Gap 5 (OOD calibration)** — sanity for any v6 (we don't want
+   confidence to *worsen* outside the K8s distribution).
+5. **Gap 4 (CRD instances)** — checks that v6 reweighting doesn't break
+   generalization to actual custom resources.
+6. **Gap 3 (wrong-level scored)** — motivates the v7 tree-attention-bias
+   work documented in `next-training-improvements.md`.
 
-- **A. Required fields** — `≥ 80%`. Direct utility for suggest_fields.
-- **D. Status-side completion** — `≥ 75%`. The known gap. Lever 1
-  (selective masking) targets this directly.
-- **G. Workload patterns** — `≥ 80%`. Common in production.
-- **H. RBAC** — `≥ 70%`. Closed enums should be learnable.
-- **J. Annotation keys** — `≥ 60%` and importantly *not [UNK]* as top-1.
-  Levers 3+4 address this.
+## Pass thresholds for v6 evaluation
 
-### Stretch (motivates v7)
+| Gap | v5 baseline | v6 target |
+|---|---|---|
+| 1. Status completion | 0/8 | ≥ 6/8 |
+| 2. API version | unmeasured (v5 unknown) | ≥ 50% |
+| 3. Wrong-level (scored) | unmeasured | ≥ 60% |
+| 4. CRD-instance | unmeasured | ≥ 50% (OOV, lower bar) |
+| 5. OOD calibration | partial (1 test pass) | ≥ 75% |
+| 6. Confidence-floor reruns of existing tests | TBD after tightening | no regression |
 
-- **B. Mutual exclusivity** — `≥ 50%`. Hard but achievable with kind/
-  parent context.
-- **E. API version awareness** — `≥ 50%`. Needs apiVersion-conditional
-  routing in the kind head.
-- **C. Type completion** — `≥ 70%`. Enum knowledge.
+Plus the unchanged criteria:
+- `test_capabilities.py` should remain at 93/93 (no regression)
+- `test_structural.py` should improve from 6/9 → 8+/9 (status failure closed)
 
-### Out of scope for v6 (architecture-bound)
+## Compelling presentation arc this enables
 
-- **F. Sibling cross-reference** — current model can't copy from context.
-  Document the gap; defer to v7 (attention-bias variant).
-- **K — typo correction** — needs sub-tokenization. Defer to v7.
+Without this rubric: "we did ablations, found the test suite saturates."
 
-## How this changes the v6 plan
+With this rubric: "We characterized v5 against 6 specific blind spots,
+designed targeted v6 interventions for each, and measured per-gap deltas
+to validate the design."
 
-Looking at the levers in `v6-plan.md` against this test rubric:
-
-| Lever | Category it most helps |
-|---|---|
-| 1 — Selective masking | D (status), some A (required) |
-| 2 — Loss reweighting | indirect — rebalances toward real manifests, helps everything |
-| 3 — Per-parent min_freq | J (annotations) |
-| 4 — Annotation head | J (annotations) — better than Lever 3 alone |
-| 5 — CRD doc cap | indirect, like Lever 2 |
-
-**Gaps in the v6 plan that this rubric exposes:**
-
-- **Category A (required fields)** — none of the v6 levers directly target
-  this. v5 likely passes most but worth measuring; if any fail, may need a
-  *required-field-emphasized* training objective (e.g., always mask the
-  position where a required field should be).
-- **Category E (API version)** — apiVersion is currently in input but the
-  kind_head is conditioned only on `kind`, not on `apiVersion`. A small
-  arch tweak (concatenate apiVersion to the kind context) could help.
-- **Category H (RBAC)** — closed enums. Loss reweighting (Lever 2) should
-  help indirectly; otherwise no targeted lever needed.
-
-**Suggested v6 extension:** add a sixth lever —
-
-### Lever 6 — apiVersion-aware kind head (NEW idea, derived from rubric)
-
-**What.** Currently `kind_head` outputs targets like
-`Deployment::spec::replicas`. Extend to `apps/v1::Deployment::spec::replicas`,
-so the head distinguishes versions. Targets currently rare under one version
-gain support from the equivalent target in another.
-
-**Why.** Category E demands version awareness. Trivial cost.
-
-**Cost.** ~20 lines in vocab + dataset.
-
-## Recommended build order
-
-1. **First, expand the bigger boat** to ~30 tests across Categories A, B, D,
-   G, H, J (the practical, must-pass ones). Run against v5 — get baseline.
-2. **Then implement v6 Phase 1** (Levers 1 + 2 + 6).
-3. **Re-run expanded bigger boat** on v6.1 — measure improvement
-   per-category, identify remaining gaps.
-4. **Then v6 Phase 2** (Levers 3 + 4) if annotation handling is the
-   remaining gap.
-
-The compelling presentation arc is:
-"We tested whether the model knows K8s YAML — not just structurally but
-operationally. Found 5 systematic failure modes via embedding analysis and
-extended testing. Designed 6 targeted interventions for v6. Here are the
-gains we measured."
+That's a research-to-engineering arc — much sharper than either alone.
