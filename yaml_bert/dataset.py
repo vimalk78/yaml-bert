@@ -57,18 +57,27 @@ class YamlDataset(Dataset):
         self.mask_prob: float = config.mask_prob
         self.max_seq_len: int = config.max_seq_len
 
-        # Load and linearize all YAML files
+        # Load and linearize all YAML files. Skip any files the linearizer
+        # can't handle (e.g., uncommon tags like !!value) rather than failing
+        # the whole load.
         yaml_files: list[str] = sorted(
             glob.glob(os.path.join(yaml_dir, "**", "*.yaml"), recursive=True)
         )
         self.documents: list[list[YamlNode]] = []
         self.document_kinds: list[str] = []
+        skipped: int = 0
         for path in yaml_files:
-            nodes: list[YamlNode] = linearizer.linearize_file(path)
+            try:
+                nodes: list[YamlNode] = linearizer.linearize_file(path)
+            except Exception:
+                skipped += 1
+                continue
             if nodes:
                 annotator.annotate(nodes)
                 self.documents.append(nodes)
                 self.document_kinds.append(_extract_kind(nodes))
+        if skipped:
+            print(f"Skipped {skipped} unparseable YAML files")
 
     @classmethod
     def from_huggingface(
