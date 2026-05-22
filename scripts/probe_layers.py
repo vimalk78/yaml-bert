@@ -134,7 +134,7 @@ def main() -> None:
     parser.add_argument("--max-docs", type=int, default=300)
     parser.add_argument("--cached-docs", type=str, default=None,
                         help="Path to cached docs pickle (faster than parsing)")
-    parser.add_argument("--out", type=str, default="/tmp/probe_layers.html",
+    parser.add_argument("--out", type=str, default="docs/figures/probe_layers.html",
                         help="HTML output path for the per-layer accuracy plot")
     args = parser.parse_args()
 

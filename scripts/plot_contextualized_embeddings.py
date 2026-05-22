@@ -400,7 +400,7 @@ def main() -> None:
     parser.add_argument("--out", type=str, default=None)
     args = parser.parse_args()
 
-    out = args.out or f"/tmp/yaml_bert_{args.view}.html"
+    out = args.out or f"docs/figures/yaml_bert_{args.view}.html"
 
     yaml_files = sorted(glob.glob(os.path.join(args.yaml_dir, "**", "*.yaml"), recursive=True))
     if not yaml_files:

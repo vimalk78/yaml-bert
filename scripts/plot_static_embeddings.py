@@ -28,7 +28,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Plot static key vs value embeddings")
     parser.add_argument("checkpoint", type=str)
     parser.add_argument("--vocab", type=str, required=True)
-    parser.add_argument("--out", type=str, default="/tmp/key_value_embeddings.png")
+    parser.add_argument("--out", type=str, default="docs/figures/key_value_embeddings.png")
     parser.add_argument("--perplexity", type=int, default=30)
     args = parser.parse_args()
 
