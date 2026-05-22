@@ -128,10 +128,14 @@ def train_probe(states: torch.Tensor, labels: torch.Tensor, num_classes: int, ep
 def main() -> None:
     parser = argparse.ArgumentParser(description="Probe layer representations")
     parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_v4/vocab.json")
+    parser.add_argument("--vocab", type=str, required=True)
+    parser.add_argument("--yaml-dir", type=str, default="cluster-yamls",
+                        help="Directory of YAMLs to probe on (recursive)")
     parser.add_argument("--max-docs", type=int, default=300)
     parser.add_argument("--cached-docs", type=str, default=None,
                         help="Path to cached docs pickle (faster than parsing)")
+    parser.add_argument("--out", type=str, default="/tmp/probe_layers.html",
+                        help="HTML output path for the per-layer accuracy plot")
     args = parser.parse_args()
 
     torch.manual_seed(42)
@@ -153,13 +157,11 @@ def main() -> None:
     else:
         from yaml_bert.linearizer import YamlLinearizer
         from yaml_bert.annotator import DomainAnnotator
-        import os
-        data_dir = os.path.join(os.path.dirname(__file__), "..", "data", "k8s-yamls")
         dataset = YamlDataset(
-            yaml_dir=data_dir, vocab=vocab,
+            yaml_dir=args.yaml_dir, vocab=vocab,
             linearizer=YamlLinearizer(), annotator=DomainAnnotator(),
         )
-    print(f"Dataset: {len(dataset)} docs\n")
+    print(f"Dataset: {len(dataset)} docs from {args.yaml_dir}\n")
 
     print("Extracting hidden states...")
     data = extract_layer_states(model, dataset, vocab, max_docs=args.max_docs)
@@ -179,12 +181,17 @@ def main() -> None:
     print("-" * 48)
 
     properties = ["depth", "node_type", "parent_key", "kind"]
+    # accuracies[prop] = [embedding_acc, layer0_acc, layer1_acc, ...]
+    accuracies: dict[str, list[float]] = {p: [] for p in properties}
+    stage_names: list[str] = []
 
     # Embedding layer
     accs = []
     for prop in properties:
         acc = train_probe(data["embedding"], labels[prop], num_classes[prop])
         accs.append(acc)
+        accuracies[prop].append(acc)
+    stage_names.append("Embedding")
     print(f"{'Embedding':<12} {accs[0]:>7.1%} {accs[1]:>7.1%} {accs[2]:>7.1%} {accs[3]:>7.1%}")
 
     # Transformer layers
@@ -193,11 +200,100 @@ def main() -> None:
         for prop in properties:
             acc = train_probe(data["layers"][l], labels[prop], num_classes[prop])
             accs.append(acc)
+            accuracies[prop].append(acc)
+        stage_names.append(f"Layer {l}")
         print(f"{'Layer ' + str(l):<12} {accs[0]:>7.1%} {accs[1]:>7.1%} {accs[2]:>7.1%} {accs[3]:>7.1%}")
 
     print(f"\nNote: kind and parent_key are NOT in the v4 input embedding.")
     print(f"Any accuracy above random for these was learned from the prediction target.")
     print(f"Random baselines: depth={1/16:.1%}, type={1/4:.1%}, parent=~{1/100:.1%}, kind=~{1/vocab.kind_vocab_size:.1%}")
+
+    # Plot per-layer accuracy as interactive HTML
+    _plot_probe_accuracies(stage_names, accuracies, num_classes, args.out)
+
+
+def _plot_probe_accuracies(stage_names: list[str], accuracies: dict[str, list[float]],
+                           num_classes: dict[str, int], out: str) -> None:
+    """Emit an interactive HTML heatmap showing probe accuracy across layers."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    # Row order chosen so the "always recoverable" features sit at top and
+    # the "learned through attention" features sit at the bottom — eye reads
+    # the visible gradient on the kind row.
+    props = ["node_type", "depth", "parent_key", "kind"]
+    pretty_label = {
+        "depth": f"Depth<br><span style='font-size:0.75em;color:#888'>{num_classes['depth']} classes · rand {1/num_classes['depth']:.0%}</span>",
+        "node_type": f"Node type<br><span style='font-size:0.75em;color:#888'>{num_classes['node_type']} classes · rand {1/num_classes['node_type']:.0%}</span>",
+        "parent_key": f"Parent key<br><span style='font-size:0.75em;color:#888'>{num_classes['parent_key']} classes · rand {1/num_classes['parent_key']:.0%}</span>",
+        "kind": f"Kind<br><span style='font-size:0.75em;color:#888'>{num_classes['kind']} classes · rand {1/num_classes['kind']:.0%}</span>",
+    }
+    role_label = {
+        "depth": "in input",
+        "node_type": "in input",
+        "parent_key": "learned",
+        "kind": "learned",
+    }
+
+    z = [[accuracies[p][s] * 100 for s in range(len(stage_names))] for p in props]
+    text = [[f"{accuracies[p][s] * 100:.1f}%" for s in range(len(stage_names))] for p in props]
+    rand_baselines = [f"{(1 / num_classes[p]) * 100:.1f}%" for p in props]
+
+    deltas = [accuracies[p][-1] * 100 - accuracies[p][0] * 100 for p in props]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        column_widths=[0.88, 0.12],
+        horizontal_spacing=0.02,
+        subplot_titles=("Probe accuracy by stage", "Δ (final − embedding)"),
+        specs=[[{"type": "heatmap"}, {"type": "bar"}]],
+    )
+
+    # Main heatmap
+    fig.add_trace(go.Heatmap(
+        z=z,
+        x=stage_names,
+        y=[pretty_label[p] for p in props],
+        text=text,
+        texttemplate="%{text}",
+        textfont=dict(size=14, color="black"),
+        colorscale=[
+            [0.0, "#fff7bc"],   # pale yellow (chance)
+            [0.5, "#fec44f"],   # amber (middling)
+            [0.85, "#d95f0e"],  # orange (high)
+            [1.0, "#7f2704"],   # dark brown (near-perfect)
+        ],
+        zmin=0, zmax=100,
+        colorbar=dict(title="Accuracy %", x=0.85, len=0.85),
+        hovertemplate="<b>%{y}</b><br>%{x}: %{z:.1f}%<br>random baseline shown in row label<extra></extra>",
+    ), row=1, col=1)
+
+    # Delta bar chart on the right
+    bar_colors = ["#5b8def" if d >= 0 else "#d62728" for d in deltas]
+    fig.add_trace(go.Bar(
+        y=[pretty_label[p] for p in props],
+        x=deltas,
+        orientation="h",
+        marker=dict(color=bar_colors, line=dict(color="black", width=1)),
+        text=[f"{d:+.1f}%" for d in deltas],
+        textposition="outside",
+        textfont=dict(size=13),
+        showlegend=False,
+        hovertemplate="<b>%{y}</b><br>Δ: %{x:+.1f}%<extra></extra>",
+    ), row=1, col=2)
+
+    fig.update_xaxes(title_text="Encoder stage", row=1, col=1)
+    fig.update_xaxes(title_text="Δ (pp)", range=[min(deltas) - 8, max(deltas) + 12], row=1, col=2)
+    fig.update_yaxes(showticklabels=False, row=1, col=2)
+
+    fig.update_layout(
+        title=("What does each encoder stage encode? "
+               "Linear probe accuracy across the 4 structural properties"),
+        width=1800, height=620,
+        template="plotly_white",
+    )
+    fig.write_html(out, include_plotlyjs="inline", config={"responsive": True})
+    print(f"\nSaved {out}")
 
 
 if __name__ == "__main__":
