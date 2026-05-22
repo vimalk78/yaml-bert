@@ -32,6 +32,7 @@ class YamlBertConfig:
     batch_size: int = 32
     num_epochs: int = 30
     max_seq_len: int = 512
+    skip_unk_targets: bool = True  # v6: don't supervise on positions whose target is [UNK]
 
     # Auxiliary loss weights
     aux_kind_weight: float = 0.1     # α: kind classification loss weight

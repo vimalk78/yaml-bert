@@ -170,6 +170,7 @@ class YamlDataset(Dataset):
         instance.annotator = None
         instance.mask_prob = config.mask_prob
         instance.max_seq_len = config.max_seq_len
+        instance.skip_unk_targets = config.skip_unk_targets
         instance.documents = documents
         instance.document_kinds = [_extract_kind(doc) for doc in documents]
         instance._v4_mode = True  # Flag for __getitem__
@@ -208,6 +209,8 @@ class YamlDataset(Dataset):
         simple_labels: list[int] = [-100] * seq_len
         kind_labels: list[int] = [-100] * seq_len
         mask_token_id: int = self.vocab.special_tokens["[MASK]"]
+        unk_id: int = self.vocab.special_tokens["[UNK]"]
+        skip_unk: bool = getattr(self, "skip_unk_targets", True)
 
         for i in range(seq_len):
             if nodes[i].node_type not in _MASKABLE_TYPES:
@@ -215,13 +218,23 @@ class YamlDataset(Dataset):
             if random.random() >= self.mask_prob:
                 continue
 
-            # Compute hybrid target
+            # Compute hybrid target FIRST so we can skip positions whose
+            # target is [UNK] (Lever 1, v6.1 — don't train the model to
+            # confidently predict [UNK])
             target, head_type = compute_target(nodes[i], kind)
             if head_type == "simple":
-                simple_labels[i] = self.vocab.encode_simple_target(target)
+                target_id = self.vocab.encode_simple_target(target)
+            else:
+                target_id = self.vocab.encode_kind_target(target)
+
+            if skip_unk and target_id == unk_id:
+                continue
+
+            if head_type == "simple":
+                simple_labels[i] = target_id
                 kind_labels[i] = -100
             else:
-                kind_labels[i] = self.vocab.encode_kind_target(target)
+                kind_labels[i] = target_id
                 simple_labels[i] = -100
 
             # Apply token replacement (80/10/10 rule)
