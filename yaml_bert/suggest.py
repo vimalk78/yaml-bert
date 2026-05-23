@@ -55,7 +55,7 @@ def suggest_missing_fields(
     annotator: DomainAnnotator = DomainAnnotator()
     nodes: list[YamlNode] = linearizer.linearize(yaml_text)
     if not nodes:
-        return []
+        return [], {}
     annotator.annotate(nodes)
 
     token_ids, node_types, depths, siblings = _encode_nodes(nodes, vocab)

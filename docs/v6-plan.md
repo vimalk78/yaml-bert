@@ -226,6 +226,22 @@ the 6 gaps and per-gap pass thresholds. Briefly:
 - Whether the wider `kind_target_vocab` (from Lever 6) adds noise that
   hurts other categories.
 
+## Followups (TODO, not blocking v6.1)
+
+- **HF Model repo.** v6.1 lives only in the Space (`vimalk78/yaml-bert`,
+  the Gradio demo). For discoverability + a citable model page, create a
+  separate Model repo (e.g. `vimalk78/yaml-bert-v6.2` once we have a
+  better checkpoint to publish), with:
+    - Model card README (frontmatter: tags, license, datasets, library)
+    - Loading snippet (the model is custom-arch, not `from_pretrained`-compatible)
+    - Architecture summary + evaluation table + citation
+  Defer until we have a v6.2+ checkpoint that's worth publishing as the
+  canonical version. The current v6.1 is a partial fix; publishing it
+  feels premature.
+- **Refactor Space app to download model from Model repo** instead of
+  bundling the .pt in the Space LFS. Cleaner separation, smaller Space
+  footprint. Depends on the Model repo above.
+
 ## Decision — committed scope
 
 **Build Phase 1 (Levers 1, 5, 6) together as v6.1.** Implement, train
