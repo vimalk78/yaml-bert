@@ -1,5 +1,13 @@
 # YAML-BERT v6 — Phase 1 Plan
 
+> **Status update (2026-05-23):** Lever 1 shipped as v6.1 — full corpus,
+> 30 epochs, evaluated. Closes the structural-test status failures
+> (6/9 → 9/9) and eliminates 99% [UNK] over-confidence. Capability
+> tests within noise of v5. Bigger-boat vocab_gap still 0/4 because
+> status targets are absent from the vocab — Lever 1 alone can't add
+> them. See [`evaluation-results.md` Section 7](./evaluation-results.md)
+> for full numbers. Levers 5 and 6 below remain unimplemented.
+
 ## Context
 
 v5 passes 93/93 pretrain capability tests, but probing surfaced three

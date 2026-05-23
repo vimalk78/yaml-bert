@@ -232,3 +232,90 @@ a fluke (it dropped to 90 on seed 7).
 MAX_DOCS=25000 SEEDS="42 7" ./scripts/run_ablations.sh    # full sweep
 python scripts/eval_ablations.py output_ablation_*        # tabulate
 ```
+
+---
+
+## 7. v6.1 — Lever 1 (selective masking)
+
+v6.1 is v5's architecture and hyperparameters trained from scratch with one
+change: positions whose target encodes to `[UNK]` are no longer masked
+(`yaml_bert/dataset.py::_getitem_v4`). Closes the supervised-bug failure
+mode where v5 confidently predicted `[UNK]` at 99% on status-side fields.
+
+### Training
+
+Same recipe as v5: 276K HF docs, 30 epochs, batch 32, lr 1e-4,
+min_freq=100, seed 42, FULL tree-PE variant. Ran on a single L4 GPU.
+
+```
+v6.1 final loss: 0.4916  (kind: 0.0521 | simple: 0.4395)
+v5  final loss: ~0.59 at epoch 15 (final epoch-30 number not preserved)
+```
+
+Loss curve: `docs/figures/training_loss_v6.1.html` (interactive). Total
+loss drops sharply over epochs 1-5 (2.29 → 0.76), then steady refinement
+through epoch 30.
+
+### Results vs v5
+
+| Metric | v5 | v6.1 | Delta |
+|---|---|---|---|
+| Pretrain capability tests | 93 / 93 | 92 / 93 | −1 (noise; Volume semantics dropped to 2/3) |
+| Fine-tune capability tests | 26 / 28 | 24 / 28 | −2 (within noise) |
+| **Structural tests** | **6 / 9** | **9 / 9** | **+3** |
+| Bigger boat — crd_pollution | 4 / 4 | 4 / 4 | 0 |
+| Bigger boat — annotation_keys | 2 / 2 | 2 / 2 | 0 |
+| Bigger boat — confidence_calib | 3 / 3 | 3 / 3 | 0 |
+| Bigger boat — vocab_gap (status) | 0 / 4 | 0 / 4 † | 0 (but failure mode changed) |
+
+### What the structural-test improvement looks like
+
+The 99% [UNK] failures in v5 are now real-key predictions in v6.1. Example
+(`Deployment.status.replicas`, mask `availableReplicas`):
+
+```
+v5 top-1:   [UNK]                (99.63%)   ← supervised bug
+v6.1 top-1: revisionHistoryLimit (92.01%)   ← wrong, but not [UNK]
+```
+
+Same for `Pod.status.conditions`, `HPA.status.desiredReplicas`,
+`Service.status.loadBalancer.hostname` — all formerly [UNK]-heavy,
+now predicting plausible spec-side alternatives.
+
+Test 5 (nonsense-YAML calibration): confidence drop sharpened from
+100% → 66% (v5) to 100% → 39% (v6.1). The model is *more* calibrated
+to recognize OOD input than before.
+
+### † Why bigger-boat vocab_gap is still 0/4
+
+The bigger-boat test asserts both "top-1 is not [UNK]" AND "an expected
+status key appears in top-5." v6.1 passes the first but not the second
+— **because the status targets are still absent from the target vocab.**
+Lever 1 stops the model from confidently emitting [UNK]; it does not
+add new vocabulary entries.
+
+To actually predict status keys correctly, v6.2 would need to add status
+targets to the vocab (e.g., per-parent min_freq override) or train on a
+status-rich corpus. See `docs/v6-plan.md`.
+
+### Interpretation
+
+v6.1 validates that Lever 1 is a real fix for a real bug. It is not, on
+its own, sufficient to make the model competent at status-side
+prediction — that requires vocab work. The structural-test arc (6/9 →
+9/9) is the strongest signal that the bug fix worked as intended.
+
+### Reproduce
+
+```
+# Same architecture as v5, only difference is skip_unk_targets=True (default)
+PYTHONPATH=. python scripts/train.py \
+    --max-docs 0 --epochs 30 --batch-size 32 \
+    --vocab-min-freq 100 --seed 42 \
+    --output-dir output_v6.1_lever1_only_seed42
+
+# Eval
+python model_tests/test_capabilities.py output_v6.1.../checkpoints/yaml_bert_v4_epoch_30.pt --vocab output_v6.1.../vocab.json
+python model_tests/test_structural.py    output_v6.1.../checkpoints/yaml_bert_v4_epoch_30.pt --vocab output_v6.1.../vocab.json
+python model_tests/test_bigger_boat.py   output_v6.1.../checkpoints/yaml_bert_v4_epoch_30.pt --vocab output_v6.1.../vocab.json --show-passes
+```
