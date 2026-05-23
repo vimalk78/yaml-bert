@@ -12,15 +12,33 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
-import gradio as gr
+# Progress logging — every step on its own line with elapsed wall time, so
+# the HF Space build log shows continuous progress instead of long silent gaps.
+_T0 = time.time()
+
+
+def _log(msg: str) -> None:
+    print(f"[{time.time() - _T0:6.2f}s] {msg}", file=sys.stderr, flush=True)
+
+
+_log("Starting app...")
+_log("Importing torch (takes a few seconds)...")
 import torch
+_log(f"torch {torch.__version__} imported")
 
+_log("Importing gradio...")
+import gradio as gr
+_log(f"gradio {gr.__version__} imported")
+
+_log("Importing yaml_bert package...")
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
 from yaml_bert.suggest import suggest_missing_fields
 from yaml_bert.vocab import Vocabulary
+_log("yaml_bert imported")
 
 
 # ----- Model loading (once at startup) -----
@@ -30,7 +48,14 @@ DEFAULT_VOCAB = "output_v6.1_lever1_only_seed42/vocab.json"
 
 
 def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vocabulary]:
+    _log(f"Loading vocab from {vocab_path}")
     vocab = Vocabulary.load(vocab_path)
+    _log(f"Vocab loaded: {vocab.key_vocab_size} keys, "
+         f"{vocab.value_vocab_size} values, "
+         f"{vocab.simple_target_vocab_size} simple targets, "
+         f"{vocab.kind_target_vocab_size} kind targets")
+
+    _log("Building model architecture")
     config = YamlBertConfig()
     emb = YamlBertEmbedding(
         config=config,
@@ -43,40 +68,112 @@ def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vo
         simple_vocab_size=vocab.simple_target_vocab_size,
         kind_vocab_size=vocab.kind_target_vocab_size,
     )
+    _log("Model architecture ready")
+
+    _log(f"Reading checkpoint file {checkpoint_path}")
     cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    _log("Checkpoint deserialized; loading state dict into model")
     model.load_state_dict(cp["model_state_dict"])
     model.eval()
+    _log("State dict loaded; model in eval mode")
     return model, vocab
 
 
 checkpoint_path = os.environ.get("YAML_BERT_CHECKPOINT", DEFAULT_CHECKPOINT)
 vocab_path = os.environ.get("YAML_BERT_VOCAB", DEFAULT_VOCAB)
 
-print(f"Loading model from {checkpoint_path} (vocab: {vocab_path})", file=sys.stderr)
 MODEL, VOCAB = load_model(checkpoint_path, vocab_path)
 n_params = sum(p.numel() for p in MODEL.parameters())
-print(f"Loaded {n_params:,} parameters", file=sys.stderr)
+_log(f"Model fully loaded — {n_params:,} parameters")
 
 
 # ----- Inference -----
 
-MAX_LINES = 300
+import re
+import yaml
+
+MAX_LINES_PER_DOC = 300
+_DOC_SEP_RE = re.compile(r"^---\s*$", re.MULTILINE)
 
 
-def suggest(yaml_text: str, threshold: float, top_k: int) -> str:
-    yaml_text = (yaml_text or "").strip()
-    if not yaml_text:
-        return "_Paste a YAML manifest above to see missing-field suggestions._"
+def _label_for_example(yaml_text: str) -> str:
+    """Compact label for an example YAML.
 
+    - Single-doc: 'Kind: name' (with '(namespace)' suffix if metadata.namespace is set)
+    - Multi-doc:  'MultiDoc'
+    """
+    try:
+        docs = [d for d in yaml.safe_load_all(yaml_text) if isinstance(d, dict)]
+    except Exception:
+        return "(unparseable)"
+    if len(docs) > 1:
+        return "MultiDoc"
+    if not docs:
+        return "(unidentified)"
+    d = docs[0]
+    kind = d.get("kind", "(no kind)")
+    meta = d.get("metadata") if isinstance(d.get("metadata"), dict) else {}
+    name = meta.get("name")
+    namespace = meta.get("namespace")
+    label = f"{kind}: {name}" if name else str(kind)
+    if namespace:
+        label += f" ({namespace})"
+    return label
+
+
+def _split_yaml_documents(text: str) -> list[str]:
+    """Split a multi-document YAML on '---' separator lines.
+
+    Preserves original formatting (no parse-and-reserialize). Filters out
+    empty / whitespace-only chunks and comment-only chunks.
+    """
+    parts = _DOC_SEP_RE.split(text)
+    out: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # Skip chunks that are nothing but comments
+        if all(line.strip().startswith("#") or not line.strip()
+               for line in p.splitlines()):
+            continue
+        out.append(p)
+    return out
+
+
+def _format_suggestions(suggestions: list[dict]) -> str:
+    """Render the suggestions list as a grouped markdown table."""
+    by_parent: dict[str, list[dict]] = {}
+    for s in suggestions:
+        by_parent.setdefault(s.get("parent_path") or "(root)", []).append(s)
+
+    blocks: list[str] = []
+    for parent in sorted(by_parent.keys(),
+                         key=lambda p: -max(s["confidence"] for s in by_parent[p])):
+        rows = ["| Missing key | Confidence | Strength |", "|---|---:|---|"]
+        for s in sorted(by_parent[parent], key=lambda x: -x["confidence"]):
+            conf = s["confidence"]
+            strength = "**STRONG**" if conf >= 0.7 else ("MODERATE" if conf >= 0.5 else "weak")
+            rows.append(f"| `{s['missing_key']}` | {conf:.1%} | {strength} |")
+        blocks.append(f"#### `{parent}`\n" + "\n".join(rows))
+    return "\n\n".join(blocks)
+
+
+def _detect_kind(yaml_text: str) -> str:
+    """Best-effort 'kind:' extraction from raw YAML text (for the header label)."""
+    m = re.search(r"^kind:\s*(\S+)", yaml_text, re.MULTILINE)
+    return m.group(1) if m else "?"
+
+
+def _suggest_one(yaml_text: str, threshold: float, top_k: int) -> str:
     n_lines = len(yaml_text.splitlines())
-    if n_lines > MAX_LINES:
+    if n_lines > MAX_LINES_PER_DOC:
         return (
-            f"⚠️ **YAML too large for this demo** — {n_lines} lines (limit: {MAX_LINES}).\n\n"
+            f"⚠️ **Document too large** — {n_lines} lines (limit: {MAX_LINES_PER_DOC}).\n\n"
             f"The model was trained on manifests up to ~512 linearized nodes. Large "
-            f"manifests (cluster-dumped Pods with rich annotations/init containers, deep CRDs) "
+            f"manifests (cluster-dumped Pods with rich annotations / init containers, deep CRDs) "
             f"exceed that and inference becomes slow and unreliable.\n\n"
-            f"Try a smaller manifest, or trim the verbose sections (annotations, env vars, "
-            f"deeply nested probes)."
+            f"Trim verbose sections (annotations, env vars, deep probes) or split the manifest."
         )
 
     try:
@@ -85,27 +182,35 @@ def suggest(yaml_text: str, threshold: float, top_k: int) -> str:
             threshold=threshold, top_k=top_k,
         )
     except Exception as e:
-        return f"**Error parsing YAML:**\n```\n{e}\n```"
+        return f"**Parse error:**\n```\n{e}\n```"
 
     if not suggestions:
-        return ("_No suggestions above threshold. Model thinks this YAML is "
-                "either complete, or it doesn't have strong opinions at this confidence level._")
+        return ("_No suggestions above threshold — the model thinks this is "
+                "either complete or has no strong opinions._")
 
-    # Group by parent_path for readability
-    by_parent: dict[str, list[dict]] = {}
-    for s in suggestions:
-        by_parent.setdefault(s.get("parent_path") or "(root)", []).append(s)
+    return _format_suggestions(suggestions)
 
+
+def suggest(yaml_text: str, threshold: float, top_k: int) -> str:
+    yaml_text = (yaml_text or "").strip()
+    if not yaml_text:
+        return "_Paste a YAML manifest above to see missing-field suggestions._"
+
+    docs = _split_yaml_documents(yaml_text)
+    if not docs:
+        return "_No YAML documents found in the input._"
+
+    # Single doc: skip the document header for cleaner output
+    if len(docs) == 1:
+        return _suggest_one(docs[0], threshold, top_k)
+
+    # Multi-doc: prefix each doc's output with a kind/index header
     blocks: list[str] = []
-    for parent in sorted(by_parent.keys(), key=lambda p: -max(s["confidence"] for s in by_parent[p])):
-        rows = ["| Missing key | Confidence | Strength |", "|---|---:|---|"]
-        for s in sorted(by_parent[parent], key=lambda x: -x["confidence"]):
-            conf = s["confidence"]
-            strength = "**STRONG**" if conf >= 0.7 else ("MODERATE" if conf >= 0.5 else "weak")
-            rows.append(f"| `{s['missing_key']}` | {conf:.1%} | {strength} |")
-        blocks.append(f"### `{parent}`\n" + "\n".join(rows))
-
-    return "\n\n".join(blocks)
+    for i, doc_text in enumerate(docs, 1):
+        kind = _detect_kind(doc_text)
+        header = f"### Document {i}: `{kind}`"
+        blocks.append(header + "\n\n" + _suggest_one(doc_text, threshold, top_k))
+    return "\n\n---\n\n".join(blocks)
 
 
 # ----- UI -----
@@ -152,19 +257,237 @@ data:
   key1: value1
 """
 
+EXAMPLE_STATEFULSET = """apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  serviceName: nginx
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: www
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: www
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+"""
+
+EXAMPLE_CRONJOB = """apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hello
+spec:
+  schedule: "*/5 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: hello
+            image: busybox:1.28
+            command: ["/bin/sh", "-c", "date; echo hello"]
+          restartPolicy: OnFailure
+"""
+
+EXAMPLE_HPA = """apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: php-apache
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: php-apache
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+"""
+
+EXAMPLE_NETWORKPOLICY = """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: db
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: api
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+"""
+
+EXAMPLE_INGRESS = """apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: site
+spec:
+  rules:
+  - host: example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: site-svc
+            port:
+              number: 80
+"""
+
+EXAMPLE_POD_INIT_PROBES = """apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  initContainers:
+  - name: init-db
+    image: busybox
+    command: ["sh", "-c", "until nc -z db 5432; do sleep 1; done"]
+  containers:
+  - name: app
+    image: myapp:1.0
+    ports:
+    - containerPort: 8080
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 8080
+      initialDelaySeconds: 10
+      periodSeconds: 5
+    readinessProbe:
+      httpGet:
+        path: /ready
+        port: 8080
+"""
+
+EXAMPLE_SECRET = """apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: Opaque
+stringData:
+  username: admin
+  password: changeme
+"""
+
+EXAMPLE_DEPLOYMENT_INCOMPLETE = """# A Deployment missing selector and replicas — model should suggest both
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: api:1.0
+"""
+
+EXAMPLE_RBAC_MULTIDOC = """# ClusterRole / PSP / ClusterRoleBinding bundle
+# Source: kubernetes/examples staging/podsecuritypolicy/rbac/bindings.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: restricted-psp-user
+rules:
+- apiGroups:
+  - policy
+  resources:
+  - podsecuritypolicies
+  resourceNames:
+  - restricted
+  verbs:
+  - use
+---
+apiVersion: policy/v1beta1
+kind: PodSecurityPolicy
+metadata:
+  name: restricted
+spec:
+  privileged: false
+  fsGroup:
+    rule: RunAsAny
+  runAsUser:
+    rule: MustRunAsNonRoot
+  seLinux:
+    rule: RunAsAny
+  supplementalGroups:
+    rule: RunAsAny
+  volumes:
+  - 'emptyDir'
+  - 'secret'
+  - 'downwardAPI'
+  - 'configMap'
+  - 'persistentVolumeClaim'
+  - 'projected'
+  hostPID: false
+  hostIPC: false
+  hostNetwork: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: restricted-psp-users
+subjects:
+- kind: Group
+  apiGroup: rbac.authorization.k8s.io
+  name: restricted-psp-users
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: restricted-psp-user
+"""
+
+_log("Building Gradio UI...")
 with gr.Blocks(title="YAML-BERT — missing-field suggester") as demo:
     gr.Markdown(
         f"""
 # YAML-BERT — Kubernetes missing-field suggester
 
-A small (7.8M-param) BERT-style encoder trained on 276K Kubernetes YAML manifests with
-**tree-aware positional encoding** and **hybrid bigram/trigram prediction targets**.
-This page runs the **v6.1 checkpoint** — same architecture as v5, with a 5-line bug
-fix to selective masking ([details](https://github.com/vimalk78/yaml-bert/blob/main/docs/evaluation-results.md#7-v61--lever-1-selective-masking)).
-
-**How it works:** the model walks each parent level in your YAML, inserts a fake
-`[MASK]` node, and reports the keys it expects to see there but that aren't present.
-Confidence reflects how strongly the model "expects" each missing field.
+Paste a Kubernetes YAML manifest below. The model walks each parent level,
+identifies fields it expects to see there but that are absent, and ranks
+the suggestions by confidence.
 
 Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
 {n_params:,} params
@@ -182,7 +505,7 @@ Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
             )
             with gr.Row():
                 threshold = gr.Slider(
-                    minimum=0.1, maximum=0.95, value=0.75, step=0.05,
+                    minimum=0.05, maximum=0.95, value=0.1, step=0.05,
                     label="Confidence threshold",
                 )
                 top_k = gr.Slider(
@@ -198,13 +521,25 @@ Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
     # No auto-trigger on yaml_input.change — typing/pasting a long YAML would
     # fire many inference requests and back up the queue. Button click only.
 
+    _ALL_EXAMPLES = [
+        EXAMPLE_NGINX,
+        EXAMPLE_DEPLOYMENT_INCOMPLETE,
+        EXAMPLE_INCOMPLETE_SERVICE,
+        EXAMPLE_CONFIGMAP,
+        EXAMPLE_SECRET,
+        EXAMPLE_STATEFULSET,
+        EXAMPLE_CRONJOB,
+        EXAMPLE_HPA,
+        EXAMPLE_NETWORKPOLICY,
+        EXAMPLE_INGRESS,
+        EXAMPLE_POD_INIT_PROBES,
+        EXAMPLE_RBAC_MULTIDOC,
+    ]
     gr.Examples(
-        examples=[
-            [EXAMPLE_NGINX, 0.75, 10],
-            [EXAMPLE_INCOMPLETE_SERVICE, 0.75, 10],
-            [EXAMPLE_CONFIGMAP, 0.75, 10],
-        ],
-        inputs=[yaml_input, threshold, top_k],
+        examples=[[y] for y in _ALL_EXAMPLES],
+        example_labels=[_label_for_example(y) for y in _ALL_EXAMPLES],
+        inputs=[yaml_input],
+        examples_per_page=20,   # show all on one page, no pagination
         label="Example YAMLs",
     )
 
@@ -212,18 +547,20 @@ Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
         """
 ---
 
-### What this model does well
-- Predicts standard Kubernetes structural fields (`spec`, `replicas`, `containers.image`, etc.)
-- Distinguishes kind-specific fields (`Deployment.replicas`, `Service.ports`)
-- Calibrated confidence: strong on common patterns, weaker on ambiguous positions
+### What it does well
+- Predicts standard Kubernetes structural fields
+- Distinguishes kind-specific fields (`Deployment.replicas` vs `Service.ports`)
+- Calibrated confidence: strong on common patterns, weaker in ambiguous positions
 
 ### Known limitations
-- **Status-side fields not yet predicted** (still being addressed in v6.2)
-- Novel CRD instances and very rare annotation keys may collapse to `[UNK]`
-- Trained on `substratusai/the-stack-yaml-k8s` (276K manifests from HF)
+- Status-side fields are not well predicted
+- Novel CRD instances and rare annotation keys may not work
+- Trained on `substratusai/the-stack-yaml-k8s`
 """
     )
 
+
+_log("Gradio UI built — launching")
 
 if __name__ == "__main__":
     demo.launch()

@@ -145,7 +145,28 @@ def suggest_missing_fields(
             probs: torch.Tensor = F.softmax(simple_logits[0, fake_pos], dim=-1)
             id_to_target = id_to_simple
         else:
-            probs = F.softmax(kind_logits[0, fake_pos], dim=-1)
+            # Inference-time conditioning: we already know the document's kind,
+            # so mask kind_head logits to keep only targets whose kind prefix
+            # matches. Redistributes probability mass to right-kind alternatives
+            # instead of letting wrong-kind targets compete.
+            kind_logits_pos = kind_logits[0, fake_pos].clone()
+            if kind:
+                kind_prefix = f"{kind}::"
+                allowed_ids: list[int] = [
+                    idx for target_str, idx in vocab.kind_target_vocab.items()
+                    if target_str.startswith(kind_prefix)
+                ]
+                # Only apply mask if we actually have targets for this kind in
+                # vocab (avoids -inf-everywhere → NaN softmax for unknown kinds)
+                if allowed_ids:
+                    mask = torch.full_like(kind_logits_pos, float("-inf"))
+                    for idx in allowed_ids:
+                        mask[idx] = 0.0
+                    # Also keep special tokens visible (so [UNK] stays available)
+                    for idx in vocab.special_tokens.values():
+                        mask[idx] = 0.0
+                    kind_logits_pos = kind_logits_pos + mask
+            probs = F.softmax(kind_logits_pos, dim=-1)
             id_to_target = id_to_kind
 
         topk = probs.topk(top_k + 5)
