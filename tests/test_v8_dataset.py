@@ -182,3 +182,54 @@ def test_v8_collate_preserves_children_info():
     assert isinstance(batch["batch_info"], list)
     assert len(batch["batch_info"]) == 2
     assert "children_of" in batch["batch_info"][0]
+
+
+def test_v8_collate_includes_aggregator_precompute():
+    """v8_collate_fn precomputes tensors needed by the vectorized aggregator."""
+    from yaml_bert.linearizer import YamlLinearizer
+    from yaml_bert.config import YamlBertConfig
+    from yaml_bert.vocab import VocabBuilder
+    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+
+    docs = [
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"),
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Service\n"),
+    ]
+    vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
+    config = YamlBertConfig(v8_mode=True, mask_prob=0.0)
+    ds = V8Dataset(documents=docs, vocab=vocab, config=config)
+    batch = v8_collate_fn([ds[0], ds[1]])
+
+    # parent_of_tensor: (B, N) long, -1 sentinel for no-parent or padding
+    assert "parent_of_tensor" in batch
+    pt = batch["parent_of_tensor"]
+    assert pt.dim() == 2
+    assert pt.dtype == torch.long
+    assert pt.shape[0] == 2  # B
+    # Doc 0: "spec" at pos 0 is root → parent_of = -1
+    #        "x" at pos 1 is child of spec → parent_of points to spec's index
+    # Doc 1: "apiVersion" root → -1, "kind" root → -1
+
+    # top_level_key_mask: (B, N) bool, True at depth-0 KEY positions
+    assert "top_level_key_mask" in batch
+    tlkm = batch["top_level_key_mask"]
+    assert tlkm.dim() == 2
+    assert tlkm.dtype == torch.bool
+    assert tlkm.shape == pt.shape
+
+    # edges_by_depth: dict[int, tensor (E, 3)] of [doc_idx, child_pos, parent_pos]
+    # parents_by_depth: dict[int, tensor (P, 2)] of [doc_idx, parent_pos] with at-least-one-child
+    assert "edges_by_depth" in batch
+    assert "parents_by_depth" in batch
+    assert isinstance(batch["edges_by_depth"], dict)
+    assert isinstance(batch["parents_by_depth"], dict)
+    # Same set of depth keys in both
+    assert set(batch["edges_by_depth"].keys()) == set(batch["parents_by_depth"].keys())
+
+    # Per-depth shape check: edges has (E, 3), parents has (P, 2)
+    for d, edges in batch["edges_by_depth"].items():
+        assert edges.dim() == 2 and edges.shape[1] == 3
+        assert edges.dtype == torch.long
+    for d, parents in batch["parents_by_depth"].items():
+        assert parents.dim() == 2 and parents.shape[1] == 2
+        assert parents.dtype == torch.long

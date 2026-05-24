@@ -199,4 +199,53 @@ def v8_collate_fn(batch: list[dict]) -> dict:
     result = {k: torch.stack(v) for k, v in padded.items()}
     result["padding_mask"] = torch.stack(padding_masks)
     result["batch_info"] = batch_info
+
+    # Vectorized-aggregator precompute. CPU work, runs in DataLoader workers.
+    B = len(batch)
+    N = max_len
+
+    # parent_of_tensor: (B, N) long. -1 sentinel for no-parent, non-key, or padding.
+    parent_of_tensor = torch.full((B, N), -1, dtype=torch.long)
+    for b_idx, info in enumerate(batch_info):
+        parent_of = info["parent_of"]  # list[int] of length n_b
+        n_b = len(parent_of)
+        if n_b > 0:
+            parent_of_tensor[b_idx, :n_b] = torch.tensor(parent_of, dtype=torch.long)
+
+    # top_level_key_mask: (B, N) bool. True where depth==0 AND position is a KEY.
+    top_level_key_mask = torch.zeros((B, N), dtype=torch.bool)
+    for b_idx, info in enumerate(batch_info):
+        for kp in info["key_positions"]:
+            if info["depth_of"][kp] == 0:
+                top_level_key_mask[b_idx, kp] = True
+
+    # edges_by_depth: dict[depth, (E, 3) long] of [doc_idx, child_pos, parent_pos] across batch.
+    # parents_by_depth: dict[depth, (P, 2) long] of unique [doc_idx, parent_pos] with at-least-one-child.
+    edges_by_depth: dict[int, list[tuple[int, int, int]]] = {}
+    parents_set_by_depth: dict[int, set[tuple[int, int]]] = {}
+    for b_idx, info in enumerate(batch_info):
+        children_of = info["children_of"]
+        depth_of = info["depth_of"]
+        for parent_pos in info["key_positions"]:
+            kids = children_of[parent_pos]
+            if not kids:
+                continue
+            parent_depth = depth_of[parent_pos]
+            edges_by_depth.setdefault(parent_depth, []).extend(
+                (b_idx, child_pos, parent_pos) for child_pos in kids
+            )
+            parents_set_by_depth.setdefault(parent_depth, set()).add(
+                (b_idx, parent_pos),
+            )
+
+    result["parent_of_tensor"] = parent_of_tensor
+    result["top_level_key_mask"] = top_level_key_mask
+    result["edges_by_depth"] = {
+        d: torch.tensor(edges, dtype=torch.long)
+        for d, edges in edges_by_depth.items()
+    }
+    result["parents_by_depth"] = {
+        d: torch.tensor(sorted(parents_set), dtype=torch.long)
+        for d, parents_set in parents_set_by_depth.items()
+    }
     return result
