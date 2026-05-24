@@ -1,5 +1,8 @@
+import torch
+
+from yaml_bert.config import YamlBertConfig
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import compute_children_info
+from yaml_bert.v8_dataset import V8Dataset, compute_children_info, v8_collate_fn
 
 
 def test_compute_children_info_simple():
@@ -140,3 +143,42 @@ def test_compute_children_info_empty_input():
     assert info["key_positions"] == []
     assert info["depth_of"] == []
     assert info["full_path_of"] == []
+
+
+def test_v8_dataset_item_keys():
+    """V8Dataset item contains the required keys."""
+    nodes_list = [
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n")
+        for _ in range(2)
+    ]
+    vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
+        [n for doc in nodes_list for n in doc], min_freq=1,
+    )
+    config = YamlBertConfig(v8_mode=True, mask_prob=1.0)  # mask all maskable for deterministic test
+    ds = V8Dataset(documents=nodes_list, vocab=vocab, config=config)
+
+    item = ds[0]
+    assert "token_ids" in item
+    assert "node_types" in item
+    assert "depths" in item
+    assert "sibling_indices" in item
+    assert "atomic_labels" in item
+    assert "children_info" in item  # dict, not tensor — collate handles
+
+
+def test_v8_collate_preserves_children_info():
+    """Collate returns batch with batched tensors and a list of children_info."""
+    nodes_list = [
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\n"),
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Service\nspec:\n  x: 1\n"),
+    ]
+    vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
+        [n for doc in nodes_list for n in doc], min_freq=1,
+    )
+    config = YamlBertConfig(v8_mode=True, mask_prob=0.5)
+    ds = V8Dataset(documents=nodes_list, vocab=vocab, config=config)
+    batch = v8_collate_fn([ds[0], ds[1]])
+    assert batch["token_ids"].dim() == 2  # (B, N)
+    assert isinstance(batch["batch_info"], list)
+    assert len(batch["batch_info"]) == 2
+    assert "children_of" in batch["batch_info"][0]
