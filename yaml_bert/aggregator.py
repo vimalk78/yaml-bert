@@ -1,9 +1,11 @@
 """Tree aggregator: bottom-up combine of token hidden states into subtree
 vectors + a document vector at the root.
 
-Phase 0 uses mean combine (no learnable params) and a per-document Python
-loop (no batched scatter ops). If Phase 0 benchmarking shows this is a
-bottleneck, vectorize using scatter operations in a follow-up.
+Mean combine (no learnable params). Two execution paths share the same
+output: a per-document reference loop, and a batched scatter-based
+vectorized path activated when the caller passes precomputed tensors.
+Numerical equivalence between the two paths is locked by
+tests/test_aggregator_vectorized.py.
 """
 from __future__ import annotations
 
@@ -51,10 +53,22 @@ class TreeAggregator(nn.Module):
         Returns:
             (subtree_vecs, doc_vec)
         """
-        if (parent_of_tensor is not None
-                and top_level_key_mask is not None
-                and edges_by_depth is not None
-                and parents_by_depth is not None):
+        provided = (
+            parent_of_tensor is not None,
+            top_level_key_mask is not None,
+            edges_by_depth is not None,
+            parents_by_depth is not None,
+        )
+        if any(provided):
+            if not all(provided):
+                raise ValueError(
+                    "TreeAggregator.forward: vectorized kwargs must be passed "
+                    "all-or-none. Got: "
+                    f"parent_of_tensor={'set' if provided[0] else 'None'}, "
+                    f"top_level_key_mask={'set' if provided[1] else 'None'}, "
+                    f"edges_by_depth={'set' if provided[2] else 'None'}, "
+                    f"parents_by_depth={'set' if provided[3] else 'None'}"
+                )
             return self._forward_vectorized(
                 hidden_states,
                 top_level_key_mask=top_level_key_mask,
@@ -139,13 +153,15 @@ class TreeAggregator(nn.Module):
             )
             sum_acc.index_add_(0, parent_linear_e, child_vecs)
 
+            # Use fp32 for count accumulation: fp16 has only 11 mantissa bits,
+            # so parents with >2048 children would lose precision under autocast.
             count_acc = torch.zeros(
-                B * N, dtype=hidden_states.dtype,
+                B * N, dtype=torch.float32,
                 device=hidden_states.device,
             )
             count_acc.index_add_(
                 0, parent_linear_e,
-                torch.ones_like(parent_linear_e, dtype=hidden_states.dtype),
+                torch.ones_like(parent_linear_e, dtype=torch.float32),
             )
 
             # For each parent at this depth: mean = (sum + own) / (count + 1)
@@ -153,8 +169,8 @@ class TreeAggregator(nn.Module):
             parent_pos_p = parents[:, 1]     # (P,)
             parent_linear_p = parent_doc_idx * N + parent_pos_p  # (P,)
 
-            sum_at_parents = sum_acc[parent_linear_p]       # (P, d)
-            count_at_parents = count_acc[parent_linear_p]   # (P,)
+            sum_at_parents = sum_acc[parent_linear_p]                              # (P, d)
+            count_at_parents = count_acc[parent_linear_p].to(hidden_states.dtype)  # (P,)
             own_at_parents = hidden_states[parent_doc_idx, parent_pos_p]  # (P, d)
 
             mean_at_parents = (sum_at_parents + own_at_parents) / (
@@ -169,7 +185,9 @@ class TreeAggregator(nn.Module):
         mask_f = top_level_key_mask.to(hidden_states.dtype).unsqueeze(-1)  # (B, N, 1)
         weighted = subtree_vecs * mask_f                                    # (B, N, d)
         sum_per_doc = weighted.sum(dim=1)                                   # (B, d)
-        count_per_doc = top_level_key_mask.sum(dim=1, dtype=hidden_states.dtype).clamp(min=1).unsqueeze(-1)
+        count_per_doc = top_level_key_mask.sum(
+            dim=1, dtype=torch.float32,
+        ).clamp(min=1).to(hidden_states.dtype).unsqueeze(-1)
         doc_vec = sum_per_doc / count_per_doc
 
         # If a doc has no top-level keys (count was 0 → clamped to 1), the

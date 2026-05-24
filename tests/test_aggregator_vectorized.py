@@ -53,3 +53,16 @@ def test_vectorized_aggregator_equals_per_doc_reference():
         f"doc_vec mismatch: max diff = "
         f"{(ref_doc - vec_doc).abs().max().item()}"
     )
+
+
+def test_partial_vectorized_kwargs_raises():
+    """Passing only some of the four vectorized kwargs is a silent-bug
+    footgun; aggregator must reject it explicitly."""
+    import pytest
+    agg = TreeAggregator(d_model=8)
+    hidden = torch.zeros(1, 4, 8)
+    batch_info = [{"children_of": {}, "depth_of": {}, "key_positions": [],
+                   "parent_of": [], "full_path_of": {}}]
+    with pytest.raises(ValueError, match="all-or-none"):
+        agg(hidden, batch_info,
+            parent_of_tensor=torch.full((1, 4), -1, dtype=torch.long))
