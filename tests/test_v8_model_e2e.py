@@ -192,11 +192,28 @@ def test_v8_smoke_e2e_vectorized_path():
     )
     assert torch.allclose(ref_doc, vec_doc, atol=1e-5)
 
-    # Loss + backward must still work on vectorized path
+    # Backward must actually work on the vectorized path. Run a fresh
+    # forward in train mode (not under no_grad) so autograd has a graph.
     model.train()
+    train_logits, _ = model(
+        token_ids=batch["token_ids"],
+        node_types=batch["node_types"],
+        depths=batch["depths"],
+        sibling_indices=batch["sibling_indices"],
+        batch_info=batch["batch_info"],
+        padding_mask=batch["padding_mask"],
+        parent_of_tensor=batch["parent_of_tensor"],
+        top_level_key_mask=batch["top_level_key_mask"],
+        edges_by_depth=batch["edges_by_depth"],
+        parents_by_depth=batch["parents_by_depth"],
+    )
     loss = torch.nn.functional.cross_entropy(
-        vec_logits.view(-1, vec_logits.size(-1)),
+        train_logits.view(-1, train_logits.size(-1)),
         batch["atomic_labels"].view(-1),
         ignore_index=-100,
     )
     assert torch.isfinite(loss)
+    loss.backward()
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    assert grads, "no parameters received gradients via vectorized path"
+    assert all(torch.isfinite(g).all() for g in grads), "non-finite gradient"
