@@ -55,6 +55,7 @@ class Vocabulary:
         kind_vocab: dict[str, int] | None = None,
         simple_target_vocab: dict[str, int] | None = None,
         kind_target_vocab: dict[str, int] | None = None,
+        atomic_target_vocab: dict[str, int] | None = None,
     ) -> None:
         self.key_vocab = key_vocab
         self.value_vocab = value_vocab
@@ -62,6 +63,7 @@ class Vocabulary:
         self.kind_vocab = kind_vocab or {"[NO_KIND]": 0}
         self.simple_target_vocab = simple_target_vocab or {}
         self.kind_target_vocab = kind_target_vocab or {}
+        self.atomic_target_vocab = atomic_target_vocab or {}
         self._id_to_key = {v: k for k, v in key_vocab.items()}
         self._id_to_value = {v: k for k, v in value_vocab.items()}
         self._id_to_special = {v: k for k, v in special_tokens.items()}
@@ -92,6 +94,9 @@ class Vocabulary:
 
     def encode_kind_target(self, target: str) -> int:
         return self.kind_target_vocab.get(target, self.special_tokens["[UNK]"])
+
+    def encode_atomic_target(self, target: str) -> int:
+        return self.atomic_target_vocab.get(target, self.special_tokens["[UNK]"])
 
     @staticmethod
     def extract_parent_key(parent_path: str) -> str:
@@ -130,6 +135,10 @@ class Vocabulary:
     def kind_target_vocab_size(self) -> int:
         return len(self.kind_target_vocab) + len(self.special_tokens)
 
+    @property
+    def atomic_target_vocab_size(self) -> int:
+        return len(self.atomic_target_vocab) + len(self.special_tokens)
+
     def save(self, path: str) -> None:
         data = {
             "key_vocab": self.key_vocab,
@@ -138,6 +147,7 @@ class Vocabulary:
             "kind_vocab": self.kind_vocab,
             "simple_target_vocab": self.simple_target_vocab,
             "kind_target_vocab": self.kind_target_vocab,
+            "atomic_target_vocab": self.atomic_target_vocab,
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2)
@@ -153,6 +163,7 @@ class Vocabulary:
             kind_vocab=data.get("kind_vocab"),
             simple_target_vocab=data.get("simple_target_vocab", {}),
             kind_target_vocab=data.get("kind_target_vocab", {}),
+            atomic_target_vocab=data.get("atomic_target_vocab", {}),
         )
 
 
@@ -246,11 +257,17 @@ class VocabBuilder:
             t for t, c in kind_target_counts.items()
             if c >= kind_target_min_freq or _is_status_trigram(t)
         }
+        # v8 atomic target vocab: single key tokens (no parent::child compounds).
+        # Uses the same filter threshold as keys since the entries ARE keys.
+        atomic_target_set: set[str] = {
+            t for t, c in key_counts.items() if c >= key_min_freq
+        }
 
         return self.build_from_counts(
             key_counts, value_counts, key_min_freq, kind_set,
             simple_target_set, kind_target_set,
             value_min_freq=value_min_freq,
+            atomic_target_set=atomic_target_set,
         )
 
     @staticmethod
@@ -263,6 +280,7 @@ class VocabBuilder:
         kind_target_set: set[str] | None = None,
         *,
         value_min_freq: int | None = None,
+        atomic_target_set: set[str] | None = None,
     ) -> Vocabulary:
         """Build vocabulary from pre-computed token counts.
 
@@ -304,8 +322,14 @@ class VocabBuilder:
             for i, target in enumerate(sorted(kind_target_set or []))
         }
 
+        atomic_target_vocab = {
+            target: i + offset
+            for i, target in enumerate(sorted(atomic_target_set or []))
+        }
+
         return Vocabulary(key_vocab, value_vocab, special_tokens, kind_vocab,
-                          simple_target_vocab, kind_target_vocab)
+                          simple_target_vocab, kind_target_vocab,
+                          atomic_target_vocab)
 
     @staticmethod
     def save_counts(
