@@ -44,7 +44,10 @@ class TreeAggregator(nn.Module):
         """
         b, n, d = hidden_states.shape
         subtree_vecs = hidden_states.clone()
-        doc_vec = torch.zeros(b, d, device=hidden_states.device)
+        # Propagate dtype from hidden_states so mixed-precision (autocast)
+        # downstream doesn't hit dtype mismatch in Token Head concatenation.
+        doc_vec = torch.zeros(b, d, device=hidden_states.device,
+                              dtype=hidden_states.dtype)
 
         for doc_idx in range(b):
             info = batch_info[doc_idx]
