@@ -25,7 +25,13 @@ class YamlBertConfig:
     max_depth: int = 16
     max_sibling: int = 32
     tree_pos_variant: TreePosVariant = TreePosVariant.FULL
-    tree_bias_enabled: bool = True   # v7: per-(distance, head) attention bias from tree distance
+    # tree-bias attention: per-(distance, head) bias added to attention logits.
+    # DISABLED by default in v7 because PyTorch's nn.TransformerEncoder takes a
+    # slow path whenever attn_mask is non-None (~15× slowdown observed). The
+    # module + integration are kept for future use once a custom encoder layer
+    # using F.scaled_dot_product_attention (which supports fast-path attn_mask)
+    # is built. Enable manually if you've made that change.
+    tree_bias_enabled: bool = False
 
     # Training
     mask_prob: float = 0.15
