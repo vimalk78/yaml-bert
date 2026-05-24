@@ -54,31 +54,51 @@ class V8Model(nn.Module):
         sibling_indices: torch.Tensor,
         batch_info: list[dict],
         padding_mask: torch.Tensor | None = None,
+        *,
+        parent_of_tensor: torch.Tensor | None = None,
+        top_level_key_mask: torch.Tensor | None = None,
+        edges_by_depth: dict[int, torch.Tensor] | None = None,
+        parents_by_depth: dict[int, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Returns:
-            logits: (B, N, atomic_vocab_size)
-            doc_vec: (B, d_model)
-        """
+        """Returns (logits, doc_vec). Vectorized path activates when the
+        precomputed tensor kwargs are provided (always true at training)."""
         x = self.embedding(token_ids, node_types, depths, sibling_indices)
         x = self.encoder(x, src_key_padding_mask=padding_mask)
 
-        subtree_vecs, doc_vec = self.aggregator(x, batch_info)
+        # Aggregator: forwards through to its own vectorized/reference dispatch.
+        subtree_vecs, doc_vec = self.aggregator(
+            x, batch_info,
+            parent_of_tensor=parent_of_tensor,
+            top_level_key_mask=top_level_key_mask,
+            edges_by_depth=edges_by_depth,
+            parents_by_depth=parents_by_depth,
+        )
 
-        # Build s_parent per position: for position i, use subtree vec at
-        # parent_of[i] if parent exists, else fall back to doc_vec.
         b, n, d = x.shape
-        s_parent = torch.zeros_like(x)
-        for doc_idx in range(b):
-            parent_of = batch_info[doc_idx]["parent_of"]
-            for i in range(min(n, len(parent_of))):
-                p = parent_of[i]
-                if p >= 0:
-                    s_parent[doc_idx, i] = subtree_vecs[doc_idx, p]
-                else:
-                    s_parent[doc_idx, i] = doc_vec[doc_idx]
 
-        # Concatenate: [h_i ; doc_vec ; s_parent]
+        if parent_of_tensor is not None:
+            # Vectorized s_parent
+            safe_parent = parent_of_tensor.clamp(min=0)  # (B, N)
+            s_parent = torch.gather(
+                subtree_vecs, dim=1,
+                index=safe_parent.unsqueeze(-1).expand(-1, -1, d),
+            )  # (B, N, d)
+            no_parent_mask = (parent_of_tensor == -1).unsqueeze(-1)  # (B, N, 1)
+            s_parent = torch.where(
+                no_parent_mask, doc_vec.unsqueeze(1), s_parent,
+            )
+        else:
+            # Reference path: per-doc Python loop (kept for tests / fallback).
+            s_parent = torch.zeros_like(x)
+            for doc_idx in range(b):
+                parent_of = batch_info[doc_idx]["parent_of"]
+                for i in range(min(n, len(parent_of))):
+                    p = parent_of[i]
+                    if p >= 0:
+                        s_parent[doc_idx, i] = subtree_vecs[doc_idx, p]
+                    else:
+                        s_parent[doc_idx, i] = doc_vec[doc_idx]
+
         doc_vec_broadcast = doc_vec.unsqueeze(1).expand(b, n, d)
         head_input = torch.cat([x, doc_vec_broadcast, s_parent], dim=-1)
         logits = self.token_head(head_input)
