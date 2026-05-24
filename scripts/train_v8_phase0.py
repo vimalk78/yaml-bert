@@ -25,6 +25,26 @@ from yaml_bert.vocab import VocabBuilder
 DATASET_NAME = "substratusai/the-stack-yaml-k8s"
 
 
+def _forward_v8(model, batch, device):
+    """Forward V8Model with vectorized path active. Returns (logits, doc_vec)."""
+    return model(
+        token_ids=batch["token_ids"].to(device),
+        node_types=batch["node_types"].to(device),
+        depths=batch["depths"].to(device),
+        sibling_indices=batch["sibling_indices"].to(device),
+        batch_info=batch["batch_info"],
+        padding_mask=batch["padding_mask"].to(device),
+        parent_of_tensor=batch["parent_of_tensor"].to(device),
+        top_level_key_mask=batch["top_level_key_mask"].to(device),
+        edges_by_depth={
+            d: t.to(device) for d, t in batch["edges_by_depth"].items()
+        },
+        parents_by_depth={
+            d: t.to(device) for d, t in batch["parents_by_depth"].items()
+        },
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-docs", type=int, default=5000)
@@ -95,22 +115,11 @@ def main() -> None:
         total_loss = 0.0
         n_batches = 0
         for batch in loader:
-            tensors = {k: v.to(device) for k, v in batch.items()
-                       if isinstance(v, torch.Tensor)}
-            tensors["batch_info"] = batch["batch_info"]
-
             optimizer.zero_grad()
-            logits, doc_vec = model(
-                token_ids=tensors["token_ids"],
-                node_types=tensors["node_types"],
-                depths=tensors["depths"],
-                sibling_indices=tensors["sibling_indices"],
-                batch_info=tensors["batch_info"],
-                padding_mask=tensors["padding_mask"],
-            )
+            logits, doc_vec = _forward_v8(model, batch, device)
             loss = F.cross_entropy(
                 logits.view(-1, logits.size(-1)),
-                tensors["atomic_labels"].view(-1),
+                batch["atomic_labels"].to(device).view(-1),
                 ignore_index=-100,
             )
             loss.backward()
@@ -146,16 +155,7 @@ def main() -> None:
                             num_workers=num_workers)
     with torch.no_grad():
         for batch_idx, batch in enumerate(eval_loader):
-            tensors = {k: v.to(device) for k, v in batch.items()
-                       if isinstance(v, torch.Tensor)}
-            _, dvec = model(
-                token_ids=tensors["token_ids"],
-                node_types=tensors["node_types"],
-                depths=tensors["depths"],
-                sibling_indices=tensors["sibling_indices"],
-                batch_info=batch["batch_info"],
-                padding_mask=tensors["padding_mask"],
-            )
+            _, dvec = _forward_v8(model, batch, device)
             doc_vecs.append(dvec.cpu())
             for doc_idx_in_batch in range(dvec.size(0)):
                 global_idx = batch_idx * args.batch_size + doc_idx_in_batch
