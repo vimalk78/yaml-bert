@@ -77,7 +77,8 @@ class V8Model(nn.Module):
         b, n, d = x.shape
 
         if parent_of_tensor is not None:
-            # Vectorized s_parent
+            # Vectorized s_parent. parent_of_tensor being set implies all four
+            # precompute kwargs were provided (aggregator enforces all-or-none).
             safe_parent = parent_of_tensor.clamp(min=0)  # (B, N)
             s_parent = torch.gather(
                 subtree_vecs, dim=1,
