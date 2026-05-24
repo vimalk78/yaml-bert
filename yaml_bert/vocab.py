@@ -96,6 +96,12 @@ class Vocabulary:
         return self.kind_target_vocab.get(target, self.special_tokens["[UNK]"])
 
     def encode_atomic_target(self, target: str) -> int:
+        """Encode a single key token as its atomic target id.
+
+        Returns the [UNK] id if `target` is not in the atomic target vocab.
+        Used by the v8 model head, which predicts single keys (no parent::child
+        compounds) drawn from the same token universe as `key_vocab`.
+        """
         return self.atomic_target_vocab.get(target, self.special_tokens["[UNK]"])
 
     @staticmethod
@@ -289,6 +295,13 @@ class VocabBuilder:
         """
         if value_min_freq is None:
             value_min_freq = min_freq
+        # Derive atomic_target_set from key_counts when not supplied. The atomic
+        # set IS-A subset of keys by definition, so this is self-consistent and
+        # prevents callers (e.g. build_from_huggingface) from silently producing
+        # an empty atomic_target_vocab — which would break v8 training (output
+        # head would collapse to ~3 classes and every target would map to [UNK]).
+        if atomic_target_set is None:
+            atomic_target_set = {t for t, c in key_counts.items() if c >= min_freq}
         special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
         offset = len(special_tokens)
 
