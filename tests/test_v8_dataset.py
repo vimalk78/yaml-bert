@@ -233,3 +233,56 @@ def test_v8_collate_includes_aggregator_precompute():
     for d, parents in batch["parents_by_depth"].items():
         assert parents.dim() == 2 and parents.shape[1] == 2
         assert parents.dtype == torch.long
+
+    # Value-level correctness checks (catch off-by-one / wrong-axis bugs)
+    # Doc 0: "apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"
+    # Key positions for doc 0 (in linearization order): apiVersion, kind, spec, x
+    # Depth-0 keys: apiVersion, kind, spec; depth-1 key: x (child of spec)
+    info0 = batch["batch_info"][0]
+    info1 = batch["batch_info"][1]
+
+    # parent_of_tensor: every depth-0 key should have parent == -1; child x
+    # should have parent == position of "spec".
+    depth0_keys_doc0 = [kp for kp in info0["key_positions"] if info0["depth_of"][kp] == 0]
+    for kp in depth0_keys_doc0:
+        assert pt[0, kp].item() == -1, (
+            f"depth-0 key at pos {kp} should have parent -1, got {pt[0, kp].item()}"
+        )
+
+    # "x" is the depth-1 key in doc 0; its parent_of should be the position of "spec".
+    depth1_keys_doc0 = [kp for kp in info0["key_positions"] if info0["depth_of"][kp] == 1]
+    assert len(depth1_keys_doc0) == 1, (
+        f"expected one depth-1 key in doc 0 (x), got {depth1_keys_doc0}"
+    )
+    x_pos = depth1_keys_doc0[0]
+    spec_pos = next(kp for kp in info0["key_positions"]
+                    if info0["full_path_of"][kp] == "spec")
+    assert pt[0, x_pos].item() == spec_pos, (
+        f"x's parent should be spec at pos {spec_pos}, got {pt[0, x_pos].item()}"
+    )
+
+    # top_level_key_mask: True count per doc must equal number of depth-0 keys.
+    expected_doc0 = len(depth0_keys_doc0)
+    expected_doc1 = sum(1 for kp in info1["key_positions"]
+                       if info1["depth_of"][kp] == 0)
+    assert tlkm[0].sum().item() == expected_doc0
+    assert tlkm[1].sum().item() == expected_doc1
+
+    # Padding positions in parent_of_tensor must still be -1.
+    n0 = len(info0["parent_of"])
+    n1 = len(info1["parent_of"])
+    if n0 < pt.shape[1]:
+        assert (pt[0, n0:] == -1).all()
+    if n1 < pt.shape[1]:
+        assert (pt[1, n1:] == -1).all()
+
+    # edges_by_depth at depth 0 should include the edge (doc_idx=0, child=x_pos,
+    # parent=spec_pos) — spec is at depth 0, so the edge depth (parent's depth)
+    # is 0.
+    assert 0 in batch["edges_by_depth"], "expected depth-0 edges from doc 0"
+    edges_d0 = batch["edges_by_depth"][0]
+    expected_edge = torch.tensor([0, x_pos, spec_pos], dtype=torch.long)
+    assert any(torch.equal(row, expected_edge) for row in edges_d0), (
+        f"expected edge {expected_edge.tolist()} in edges_by_depth[0]: "
+        f"{edges_d0.tolist()}"
+    )

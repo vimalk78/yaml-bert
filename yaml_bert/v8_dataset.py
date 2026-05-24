@@ -215,9 +215,10 @@ def v8_collate_fn(batch: list[dict]) -> dict:
     # top_level_key_mask: (B, N) bool. True where depth==0 AND position is a KEY.
     top_level_key_mask = torch.zeros((B, N), dtype=torch.bool)
     for b_idx, info in enumerate(batch_info):
-        for kp in info["key_positions"]:
-            if info["depth_of"][kp] == 0:
-                top_level_key_mask[b_idx, kp] = True
+        depth_of = info["depth_of"]
+        depth_zero_kps = [kp for kp in info["key_positions"] if depth_of[kp] == 0]
+        if depth_zero_kps:
+            top_level_key_mask[b_idx, depth_zero_kps] = True
 
     # edges_by_depth: dict[depth, (E, 3) long] of [doc_idx, child_pos, parent_pos] across batch.
     # parents_by_depth: dict[depth, (P, 2) long] of unique [doc_idx, parent_pos] with at-least-one-child.
