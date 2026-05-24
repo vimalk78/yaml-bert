@@ -16,3 +16,8 @@ cluster-yamls/
 # Private teaching materials
 docs/ml-lessons-learned.md
 docs/ml-quiz.md
+
+# Session-local artifacts (downloaded papers, private conversation logs, ad-hoc data)
+*.pdf
+from-grok.md
+data/
