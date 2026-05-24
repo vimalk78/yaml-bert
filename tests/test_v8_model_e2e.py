@@ -78,3 +78,49 @@ def test_v8_model_backward_no_nan():
     grads_nonzero = any(p.grad is not None and p.grad.abs().sum() > 0
                        for p in model.parameters() if p.requires_grad)
     assert grads_nonzero
+
+
+def test_v8_smoke_e2e_small_batch():
+    """End-to-end: dataset → collate → model → loss → backward."""
+    from yaml_bert.linearizer import YamlLinearizer
+    from yaml_bert.vocab import VocabBuilder
+    from yaml_bert.config import YamlBertConfig
+    from yaml_bert.embedding import YamlBertEmbedding
+    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+
+    yamls = [
+        "apiVersion: v1\nkind: Pod\nmetadata:\n  name: a\n",
+        "apiVersion: v1\nkind: Service\nspec:\n  x: 1\n",
+        "apiVersion: apps/v1\nkind: Deployment\nspec:\n  replicas: 3\n",
+    ]
+    documents = [YamlLinearizer().linearize(y) for y in yamls]
+    flat = [n for doc in documents for n in doc]
+    vocab = VocabBuilder().build(flat, min_freq=1)
+
+    config = YamlBertConfig(d_model=32, num_layers=2, num_heads=4,
+                            v8_mode=True, mask_prob=0.5)
+    ds = V8Dataset(documents, vocab, config)
+    batch = v8_collate_fn([ds[i] for i in range(len(ds))])
+
+    emb = YamlBertEmbedding(config=config,
+                            key_vocab_size=vocab.key_vocab_size,
+                            value_vocab_size=vocab.value_vocab_size)
+    model = V8Model(config=config, embedding=emb,
+                    atomic_vocab_size=vocab.atomic_target_vocab_size)
+
+    logits, doc_vec = model(
+        token_ids=batch["token_ids"],
+        node_types=batch["node_types"],
+        depths=batch["depths"],
+        sibling_indices=batch["sibling_indices"],
+        batch_info=batch["batch_info"],
+        padding_mask=batch["padding_mask"],
+    )
+
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, logits.size(-1)),
+        batch["atomic_labels"].view(-1),
+        ignore_index=-100,
+    )
+    assert torch.isfinite(loss)
+    loss.backward()
