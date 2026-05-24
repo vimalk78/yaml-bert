@@ -6,6 +6,15 @@ from yaml_bert.types import NodeType, YamlNode
 
 
 class YamlLinearizer:
+    # Universal depth cap (Lever 5). Below this depth, content is essentially
+    # exclusively CRD schema definition (depth 11+ is 99.997% CRD); capping
+    # rebalances training-token pressure toward real manifest content.
+    # See docs/v6-plan.md "Lever 5" for the data justification.
+    DEFAULT_MAX_DEPTH: int = 9
+
+    def __init__(self, max_depth: int = DEFAULT_MAX_DEPTH) -> None:
+        self.max_depth: int = max_depth
+
     def linearize(self, yaml_string: str) -> list[YamlNode]:
         data = yaml.safe_load(yaml_string)
         if data is None:
@@ -22,6 +31,8 @@ class YamlLinearizer:
         nodes: list[YamlNode],
         in_list: bool,
     ) -> None:
+        if depth > self.max_depth:
+            return
         if isinstance(data, dict):
             for sibling_index, (key, value) in enumerate(data.items()):
                 key_str = str(key)
@@ -81,6 +92,8 @@ class YamlLinearizer:
         parent_path: str,
         nodes: list[YamlNode],
     ) -> None:
+        if depth > self.max_depth:
+            return
         for item_index, item in enumerate(data):
             item_path = f"{parent_path}.{item_index}"
             if isinstance(item, dict):

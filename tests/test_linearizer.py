@@ -324,6 +324,62 @@ def test_integer_and_float_values():
     assert nodes[3].node_type == NodeType.VALUE
 
 
+def test_depth_cap_drops_deep_nodes():
+    """Lever 5: a max_depth cap stops recursion below the configured depth.
+    Nodes at depth <= max_depth are emitted; below that, nothing."""
+    yaml_str = """\
+a:
+  b:
+    c:
+      d:
+        e:
+          f: leaf
+"""
+    # Cap at depth=3 — should emit a (depth 0), b (1), c (2), d (3), but
+    # stop before e (4) and f (5).
+    linearizer = YamlLinearizer(max_depth=3)
+    nodes = linearizer.linearize(yaml_str)
+    tokens_emitted = {n.token for n in nodes}
+    assert "a" in tokens_emitted
+    assert "b" in tokens_emitted
+    assert "c" in tokens_emitted
+    assert "d" in tokens_emitted
+    assert "e" not in tokens_emitted
+    assert "f" not in tokens_emitted
+    assert "leaf" not in tokens_emitted
+
+
+def test_default_max_depth_preserves_normal_manifests():
+    """The default depth cap (9) should preserve all nodes in typical K8s
+    manifests — pods, deployments, services are well within depth 9."""
+    yaml_str = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web
+        image: nginx
+        ports:
+        - containerPort: 80
+"""
+    linearizer = YamlLinearizer()  # default cap = 9
+    nodes = linearizer.linearize(yaml_str)
+    # All keys should be present (no truncation in a real-world Deployment)
+    tokens = {n.token for n in nodes}
+    assert "containerPort" in tokens  # depth ~5 — well within cap
+
+
 def test_linearize_all_kubernetes_templates():
     """Smoke test: linearize every YAML file in kubernetes-yaml-templates/.
     Ensures no crashes on real-world K8s manifests."""
