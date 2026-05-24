@@ -22,6 +22,14 @@ def normalize_kind(kind: str) -> str:
     return _KIND_CANONICAL.get(kind.lower(), kind)
 
 
+def _is_status_trigram(target: str) -> bool:
+    """True if a kind_specific trigram has `status` as its parent (e.g.
+    `Deployment::status::replicas`). Such trigrams are exempted from
+    min_freq filtering — see Vocabulary.build."""
+    parts = target.split("::", 2)
+    return len(parts) >= 2 and parts[1] == "status"
+
+
 def compute_target(node: YamlNode, kind: str) -> tuple[str, str]:
     """Compute hybrid prediction target.
 
@@ -195,9 +203,17 @@ class VocabBuilder:
                     current_kind = normalized
                 prev_was_kind_key = False
 
-        # Filter target vocabs by min_freq
+        # Filter target vocabs by min_freq.
+        # Exception: kind_specific trigrams under `status` are exempted because
+        # the training corpus (user-written GitHub YAMLs) is heavily biased
+        # against status — only 0.8% of trigram occurrences are status-side,
+        # so the usual threshold drops nearly all of them. See
+        # scripts/count_status_trigrams.py for the analysis.
         simple_target_set: set[str] = {t for t, c in simple_target_counts.items() if c >= min_freq}
-        kind_target_set: set[str] = {t for t, c in kind_target_counts.items() if c >= min_freq}
+        kind_target_set: set[str] = {
+            t for t, c in kind_target_counts.items()
+            if c >= min_freq or _is_status_trigram(t)
+        }
 
         return self.build_from_counts(
             key_counts, value_counts, min_freq, kind_set,
