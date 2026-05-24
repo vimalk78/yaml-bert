@@ -53,9 +53,17 @@ class YamlBertTrainer:
             start_epoch = checkpoint["epoch"]
             print(f"Resumed from epoch {start_epoch}")
 
+        # num_workers parallelizes dataset.__getitem__ across CPU cores so
+        # GPU isn't blocked waiting for the next batch. v6.1 used the default
+        # (0 = main process only), which was OK when __getitem__ was cheap.
+        # With the v7-era growth in vocab + optional tree_distances compute,
+        # this is now the bottleneck — without workers, GPU sits at 0% util.
+        import os
+        num_workers = min(8, max(2, (os.cpu_count() or 4) // 2))
         dataloader = DataLoader(
             self.dataset, batch_size=self.config.batch_size,
             shuffle=True, collate_fn=collate_fn,
+            num_workers=num_workers, persistent_workers=True, pin_memory=True,
         )
 
         epoch_losses: list[float] = []

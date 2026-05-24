@@ -171,6 +171,7 @@ class YamlDataset(Dataset):
         instance.mask_prob = config.mask_prob
         instance.max_seq_len = config.max_seq_len
         instance.skip_unk_targets = config.skip_unk_targets
+        instance.compute_tree_distances = config.tree_bias_enabled
         instance.documents = documents
         instance.document_kinds = [_extract_kind(doc) for doc in documents]
         instance._v4_mode = True  # Flag for __getitem__
@@ -256,19 +257,25 @@ class YamlDataset(Dataset):
                 token_ids[i] = random_key_id
             # else 10%: keep unchanged
 
-        # Tree-distance matrix for tree-bias attention.
-        from yaml_bert.tree_bias import compute_tree_distance_matrix
-        tree_distances = compute_tree_distance_matrix([full_paths]).squeeze(0)  # (N, N)
-
-        return {
+        result = {
             "token_ids": torch.tensor(token_ids, dtype=torch.long),
             "node_types": torch.tensor(node_types, dtype=torch.long),
             "depths": torch.tensor(depths, dtype=torch.long),
             "sibling_indices": torch.tensor(sibling_indices, dtype=torch.long),
             "simple_labels": torch.tensor(simple_labels, dtype=torch.long),
             "kind_labels": torch.tensor(kind_labels, dtype=torch.long),
-            "tree_distances": tree_distances,
         }
+
+        # Tree-distance matrix is only needed when tree_bias is enabled.
+        # Computing the (N, N) matrix is a Python O(N^2) loop per item and
+        # dominates per-batch time if num_workers=0. Skip when not needed.
+        if getattr(self, "compute_tree_distances", False):
+            from yaml_bert.tree_bias import compute_tree_distance_matrix
+            result["tree_distances"] = (
+                compute_tree_distance_matrix([full_paths]).squeeze(0)
+            )
+
+        return result
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         if getattr(self, "_v4_mode", False):
