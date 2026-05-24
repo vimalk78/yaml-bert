@@ -45,6 +45,9 @@ class YamlBertConfig:
     aux_kind_weight: float = 0.1     # α: kind classification loss weight
     aux_parent_weight: float = 0.1   # β: parent_key classification loss weight
 
+    # v8 prototype
+    v8_mode: bool = False  # Phase 0 prototype: aggregator + atomic head
+
     def __post_init__(self) -> None:
         if self.d_ff == 0:
             self.d_ff = 4 * self.d_model
