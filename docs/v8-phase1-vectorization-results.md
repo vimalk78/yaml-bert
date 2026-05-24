@@ -19,7 +19,7 @@
 | Kind probe accuracy (top 10 kinds) | 99.87% | **99.87%** | ≥ 95% | ✅ PASS (identical to Phase 0) |
 | Loss at epoch 10 | 0.8182 | **0.8181** | trending down | ✅ PASS (matches Phase 0 to 4 decimals) |
 | Training stability | clean | **clean** | NaN-free | ✅ PASS |
-| Equivalence tests | n/a | **14/14 pass** | all pass | ✅ PASS |
+| Equivalence tests | n/a | **19/19 pass** | all pass | ✅ PASS |
 
 ## Loss trajectory (per epoch)
 
@@ -60,7 +60,7 @@ Max per-epoch delta: 0.0001. The drift is at fp32 round-off scale, consistent wi
 
 - **Speed beat the v7 baseline outright.** Target was within 25% of v7's ~9 it/s; achieved ~14 it/s — roughly 55% faster than v7. The v8 model is half v7's parameter count (5.4M vs 13.4M) and the vectorized aggregator removes the CPU/GPU sync per document; the combined effect overshot the goal.
 - **Behavior identical to Phase 0 down to 0.0001 per epoch.** Side-by-side loss trace matches to 4 decimal places. Same kind probe accuracy (99.87%). Optimizer trajectory is — within float round-off — the same trajectory. The numerical-equivalence tests held end-to-end.
-- **All 14 local tests stayed green throughout the implementation** (3 aggregator + 2 aggregator_vectorized + 1 aggregator_perf_smoke + 9 v8_dataset + 4 v8_model_e2e). The backward-compat fallback paths in `TreeAggregator` and `V8Model` mean older test fixtures continue to exercise the reference path while production code takes the vectorized path.
+- **All 19 local tests stayed green throughout the implementation** (3 aggregator + 2 aggregator_vectorized + 1 aggregator_perf_smoke + 9 v8_dataset + 4 v8_model_e2e). The backward-compat fallback paths in `TreeAggregator` and `V8Model` mean older test fixtures continue to exercise the reference path while production code takes the vectorized path.
 - **GPU utilization is now compute-bound, not Python-bound.** Phase 0's bottleneck was the per-doc loop blocking the GPU; with that gone, ~14 it/s on an L4 for a 5.4M-param model is in the right ballpark for a transformer of this size and batch.
 
 ## Decision

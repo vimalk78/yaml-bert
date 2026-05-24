@@ -3,9 +3,7 @@ import torch
 
 from yaml_bert.aggregator import TreeAggregator
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import (
-    V8Dataset, compute_children_info, v8_collate_fn,
-)
+from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
 from yaml_bert.vocab import VocabBuilder
 from yaml_bert.config import YamlBertConfig
 

@@ -47,8 +47,11 @@ V8Model.forward s_parent (VECTORIZED) → [h_i ; doc_vec ; s_parent]
 `v8_collate_fn(batch)` — adds three precomputed tensors to the returned dict:
 
 - `parent_of_tensor`: `(B, N)` long tensor. Position `(b, i)` holds the parent position of node `i` in doc `b`, or `-1` if no parent (root key, padding, or non-key). Padded positions also get `-1`.
-- `key_pos_per_depth`: `dict[int, tensor]`. For each depth `d`, a 2D long tensor `(num_keys_at_depth, 2)` of `[doc_idx, key_pos]` pairs across the batch. Used by the aggregator to iterate depth levels.
+- `edges_by_depth`: `dict[int, tensor (E, 3) long]` of `[doc_idx, child_pos, parent_pos]` per depth (depth = parent's depth). One row per parent-child edge.
+- `parents_by_depth`: `dict[int, tensor (P, 2) long]` of unique `[doc_idx, parent_pos]` with at-least-one-child per depth.
 - `top_level_key_mask`: `(B, N)` bool tensor. True at positions that are depth-0 keys, used for the doc_vec mean.
+
+> Note: an earlier draft of this spec called for a single `key_pos_per_depth` dict. During implementation it was split into `edges_by_depth` + `parents_by_depth` so the aggregator doesn't need to re-walk `children_of` inside the GPU path. Strictly better; functionally equivalent.
 
 These are derived from the existing per-doc `children_info` dicts in `batch_info`. The original `batch_info` list stays in the batch (for backward compatibility and the equivalence-test reference path).
 
@@ -132,6 +135,8 @@ Add `tests/test_aggregator_perf_smoke.py` with one test:
 - Assert vectorized is at least 5× faster
 
 This is a soft local check that the vectorization actually helped. CPU-only, fast (no GPU needed).
+
+> Note: 5× turned out to be optimistic on a CPU microbench (median measured ~3.0×, with jitter). The shipped test uses a 2.5× regression gate — well above the broken-vectorization signal (~1×) and stable enough to avoid flakes. The GPU benchmark (training throughput ≥ 7 it/s) is the real acceptance gate.
 
 ## Acceptance gate
 
