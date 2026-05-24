@@ -56,15 +56,33 @@ class YamlBertModel(nn.Module):
         x: torch.Tensor = self.embedding(token_ids, node_types, depths, sibling_indices)
 
         # If tree_bias is enabled and a distance matrix is provided, compute
-        # an additive per-(batch, head, i, j) attention bias and pass it as
-        # the encoder's attn_mask. nn.TransformerEncoder applies the same
-        # mask at every layer — fine because the bias is structural and
-        # layer-independent.
+        # an additive per-(batch, head, i, j) attention bias.
+        #
+        # When tree_bias is enabled, we COMBINE the padding_mask into the
+        # float attn_mask (instead of passing bool padding_mask separately).
+        # Reason: PyTorch's nn.MultiheadAttention disables its fast/fused
+        # attention path (SDPA/flash) when attn_mask and src_key_padding_mask
+        # have mismatched dtypes (bool vs float). Combining keeps them in a
+        # single float mask, restoring the fast path. ~5-10× speedup measured
+        # in v7 initial run vs the mismatched-mask fallback.
         attn_mask: torch.Tensor | None = None
+        effective_padding_mask: torch.Tensor | None = padding_mask
         if self.tree_bias is not None and tree_distances is not None:
-            attn_mask = self.tree_bias(tree_distances)  # (B*num_heads, N, N)
+            bias = self.tree_bias(tree_distances)  # (B*num_heads, N, N) float
+            if padding_mask is not None:
+                # padding_mask: (B, N) bool, True = padding
+                # Expand to (B*num_heads, N, N) and set padded KEYS to -inf
+                B, N = padding_mask.shape
+                pad_keys = (
+                    padding_mask[:, None, None, :]
+                    .expand(B, self.num_heads, N, N)
+                    .reshape(B * self.num_heads, N, N)
+                )
+                bias = bias.masked_fill(pad_keys, float("-inf"))
+                effective_padding_mask = None  # rolled into attn_mask
+            attn_mask = bias
 
-        x = self.encoder(x, mask=attn_mask, src_key_padding_mask=padding_mask)
+        x = self.encoder(x, mask=attn_mask, src_key_padding_mask=effective_padding_mask)
         simple_logits: torch.Tensor = self.simple_head(x)
         kind_logits: torch.Tensor = self.kind_head(x)
         return simple_logits, kind_logits
