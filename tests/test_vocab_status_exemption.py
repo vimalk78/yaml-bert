@@ -57,3 +57,29 @@ spec:
 
     # Deployment::spec::replicas was seen once, below threshold → dropped
     assert "Deployment::spec::replicas" not in vocab.kind_target_vocab
+
+
+def test_per_category_min_freq():
+    """Per-category min_freq lets targets (naturally rarer) use a lower
+    threshold than input vocabs."""
+    linearizer = YamlLinearizer()
+    nodes = linearizer.linearize("""\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+""")
+    builder = VocabBuilder()
+
+    # With tight input filter (100) but lax kind_target filter (1), the
+    # spec.replicas trigram should survive — it was seen once.
+    vocab = builder.build(
+        nodes,
+        key_min_freq=100,
+        value_min_freq=100,
+        simple_target_min_freq=1,   # let bigrams through too
+        kind_target_min_freq=1,     # allow seen-once trigrams
+    )
+    assert "Deployment::spec::replicas" in vocab.kind_target_vocab

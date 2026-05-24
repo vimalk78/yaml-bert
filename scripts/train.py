@@ -27,7 +27,17 @@ def parse_args():
     parser.add_argument("--max-docs", type=int, default=5000)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--vocab-min-freq", type=int, default=10)
+    parser.add_argument("--vocab-min-freq", type=int, default=100,
+                        help="Min-freq for input (key, value) vocabs. Default 100.")
+    parser.add_argument("--simple-target-min-freq", type=int, default=5,
+                        help="Min-freq for bigram targets. Lower than input "
+                             "min-freq because bigrams are naturally rarer per "
+                             "target (kind-aggregated). Default 5.")
+    parser.add_argument("--kind-target-min-freq", type=int, default=2,
+                        help="Min-freq for kind-specific trigram targets. "
+                             "Even lower because trigrams are partitioned by "
+                             "kind so per-target counts are lower still. "
+                             "Default 2.")
     parser.add_argument("--output-dir", type=str, default="output_v4")
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
@@ -78,7 +88,13 @@ def main():
     all_nodes = []
     for doc in cached_docs:
         all_nodes.extend(doc)
-    vocab = VocabBuilder().build(all_nodes, min_freq=args.vocab_min_freq)
+    vocab = VocabBuilder().build(
+        all_nodes,
+        key_min_freq=args.vocab_min_freq,
+        value_min_freq=args.vocab_min_freq,
+        simple_target_min_freq=args.simple_target_min_freq,
+        kind_target_min_freq=args.kind_target_min_freq,
+    )
     vocab.save(vocab_path)
 
     print(f"Key vocab: {len(vocab.key_vocab)} tokens")

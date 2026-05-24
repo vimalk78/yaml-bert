@@ -157,7 +157,37 @@ class Vocabulary:
 
 
 class VocabBuilder:
-    def build(self, nodes: list[YamlNode], min_freq: int = 1) -> Vocabulary:
+    def build(
+        self,
+        nodes: list[YamlNode],
+        min_freq: int = 1,
+        *,
+        key_min_freq: int | None = None,
+        value_min_freq: int | None = None,
+        simple_target_min_freq: int | None = None,
+        kind_target_min_freq: int | None = None,
+    ) -> Vocabulary:
+        """Build vocab with optional per-category min_freq thresholds.
+
+        Per-category thresholds default to the global `min_freq` for backward
+        compatibility. Output-target categories (simple_target, kind_target)
+        are naturally rarer per-target than input categories (key, value)
+        because they encode (parent, child) or (kind, parent, child) tuples,
+        so the same threshold treats them unfairly. Lower thresholds for
+        target categories are recommended.
+
+        See commit 347db09 (where the original target min_freq was added as
+        a fix for 72K+ vocab OOM) and the analysis in
+        scripts/count_status_trigrams.py.
+        """
+        key_min_freq = key_min_freq if key_min_freq is not None else min_freq
+        value_min_freq = value_min_freq if value_min_freq is not None else min_freq
+        simple_target_min_freq = (
+            simple_target_min_freq if simple_target_min_freq is not None else min_freq
+        )
+        kind_target_min_freq = (
+            kind_target_min_freq if kind_target_min_freq is not None else min_freq
+        )
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
         kind_set: set[str] = set()
@@ -203,21 +233,24 @@ class VocabBuilder:
                     current_kind = normalized
                 prev_was_kind_key = False
 
-        # Filter target vocabs by min_freq.
+        # Filter target vocabs by their per-category min_freq.
         # Exception: kind_specific trigrams under `status` are exempted because
         # the training corpus (user-written GitHub YAMLs) is heavily biased
         # against status — only 0.8% of trigram occurrences are status-side,
-        # so the usual threshold drops nearly all of them. See
-        # scripts/count_status_trigrams.py for the analysis.
-        simple_target_set: set[str] = {t for t, c in simple_target_counts.items() if c >= min_freq}
+        # so most status trigrams are 1-occurrence even though they're real
+        # K8s fields. See scripts/count_status_trigrams.py for the analysis.
+        simple_target_set: set[str] = {
+            t for t, c in simple_target_counts.items() if c >= simple_target_min_freq
+        }
         kind_target_set: set[str] = {
             t for t, c in kind_target_counts.items()
-            if c >= min_freq or _is_status_trigram(t)
+            if c >= kind_target_min_freq or _is_status_trigram(t)
         }
 
         return self.build_from_counts(
-            key_counts, value_counts, min_freq, kind_set,
+            key_counts, value_counts, key_min_freq, kind_set,
             simple_target_set, kind_target_set,
+            value_min_freq=value_min_freq,
         )
 
     @staticmethod
@@ -228,8 +261,16 @@ class VocabBuilder:
         kind_set: set[str] | None = None,
         simple_target_set: set[str] | None = None,
         kind_target_set: set[str] | None = None,
+        *,
+        value_min_freq: int | None = None,
     ) -> Vocabulary:
-        """Build vocabulary from pre-computed token counts."""
+        """Build vocabulary from pre-computed token counts.
+
+        `min_freq` filters keys (and values if value_min_freq is None).
+        `value_min_freq` overrides for values only.
+        """
+        if value_min_freq is None:
+            value_min_freq = min_freq
         special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
         offset = len(special_tokens)
 
@@ -241,7 +282,7 @@ class VocabBuilder:
         }
 
         # Build value vocab: min_freq filtered, but always include kind values
-        value_tokens = set(t for t, c in value_counts.items() if c >= min_freq)
+        value_tokens = set(t for t, c in value_counts.items() if c >= value_min_freq)
         if kind_set:
             value_tokens.update(kind_set)  # kinds always in value vocab
         value_vocab = {
