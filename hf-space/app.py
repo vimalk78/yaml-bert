@@ -55,8 +55,17 @@ def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vo
          f"{vocab.simple_target_vocab_size} simple targets, "
          f"{vocab.kind_target_vocab_size} kind targets")
 
+    _log(f"Reading checkpoint file {checkpoint_path}")
+    cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    # Detect checkpoint architecture: v7+ has tree_bias.* keys; v6.1- doesn't.
+    # Construct the config to match so load_state_dict succeeds.
+    from yaml_bert.model import checkpoint_has_tree_bias
+    has_tb = checkpoint_has_tree_bias(cp["model_state_dict"])
+    _log(f"Checkpoint architecture: tree_bias_enabled={has_tb}")
+
     _log("Building model architecture")
-    config = YamlBertConfig()
+    config = YamlBertConfig(tree_bias_enabled=has_tb)
     emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
@@ -70,9 +79,7 @@ def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vo
     )
     _log("Model architecture ready")
 
-    _log(f"Reading checkpoint file {checkpoint_path}")
-    cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    _log("Checkpoint deserialized; loading state dict into model")
+    _log("Loading state dict into model")
     model.load_state_dict(cp["model_state_dict"])
     model.eval()
     _log("State dict loaded; model in eval mode")

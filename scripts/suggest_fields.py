@@ -41,7 +41,12 @@ def parse_args() -> argparse.Namespace:
 
 def load_model(checkpoint_path: str, vocab_path: str, device: str) -> tuple[YamlBertModel, Vocabulary]:
     vocab: Vocabulary = Vocabulary.load(vocab_path)
-    config: YamlBertConfig = YamlBertConfig()
+    checkpoint: dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Auto-detect tree_bias from checkpoint (v7+ has tree_bias.* keys, v6.1 doesn't)
+    from yaml_bert.model import checkpoint_has_tree_bias
+    config: YamlBertConfig = YamlBertConfig(
+        tree_bias_enabled=checkpoint_has_tree_bias(checkpoint["model_state_dict"])
+    )
     emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
@@ -52,7 +57,6 @@ def load_model(checkpoint_path: str, vocab_path: str, device: str) -> tuple[Yaml
         simple_vocab_size=vocab.simple_target_vocab_size,
         kind_vocab_size=vocab.kind_target_vocab_size,
     )
-    checkpoint: dict = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()

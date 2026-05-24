@@ -194,6 +194,7 @@ class YamlDataset(Dataset):
         node_types: list[int] = []
         depths: list[int] = []
         sibling_indices: list[int] = []
+        full_paths: list[str] = []
 
         for node in nodes:
             if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
@@ -204,6 +205,12 @@ class YamlDataset(Dataset):
             node_types.append(_NODE_TYPE_INDEX[node.node_type])
             depths.append(min(node.depth, 15))
             sibling_indices.append(min(node.sibling_index, 31))
+
+            # Full path for tree-distance computation: parent_path + token.
+            # Each path uniquely identifies a node by its position in the tree.
+            full_paths.append(
+                f"{node.parent_path}.{node.token}" if node.parent_path else node.token
+            )
 
         # Apply masking
         simple_labels: list[int] = [-100] * seq_len
@@ -249,6 +256,10 @@ class YamlDataset(Dataset):
                 token_ids[i] = random_key_id
             # else 10%: keep unchanged
 
+        # Tree-distance matrix for tree-bias attention.
+        from yaml_bert.tree_bias import compute_tree_distance_matrix
+        tree_distances = compute_tree_distance_matrix([full_paths]).squeeze(0)  # (N, N)
+
         return {
             "token_ids": torch.tensor(token_ids, dtype=torch.long),
             "node_types": torch.tensor(node_types, dtype=torch.long),
@@ -256,6 +267,7 @@ class YamlDataset(Dataset):
             "sibling_indices": torch.tensor(sibling_indices, dtype=torch.long),
             "simple_labels": torch.tensor(simple_labels, dtype=torch.long),
             "kind_labels": torch.tensor(kind_labels, dtype=torch.long),
+            "tree_distances": tree_distances,
         }
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
@@ -333,7 +345,15 @@ class YamlDataset(Dataset):
 
 
 def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    """Pad a batch of variable-length sequences and create padding mask."""
+    """Pad a batch of variable-length sequences and create padding mask.
+
+    Handles two padding shapes:
+      - 1D tensors (token_ids, labels, etc.) — padded on the right.
+      - "tree_distances" 2D (N, N) — padded to (max_len, max_len) on both
+        axes with MAX_DISTANCE (padding positions are maximally far).
+    """
+    from yaml_bert.tree_bias import MAX_DISTANCE
+
     max_len: int = max(item["token_ids"].size(0) for item in batch)
 
     padded: dict[str, list[torch.Tensor]] = {key: [] for key in batch[0].keys()}
@@ -344,6 +364,19 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         pad_len: int = max_len - seq_len
 
         for key in item:
+            if key == "tree_distances":
+                # 2D padding: extend right and bottom with MAX_DISTANCE.
+                cur = item[key]
+                if pad_len > 0:
+                    full = torch.full(
+                        (max_len, max_len), MAX_DISTANCE, dtype=torch.long
+                    )
+                    full[:seq_len, :seq_len] = cur
+                    padded[key].append(full)
+                else:
+                    padded[key].append(cur)
+                continue
+
             if pad_len > 0:
                 pad_value: int = -100 if (key == "labels" or key.endswith("_labels")) else 0
                 padding: torch.Tensor = torch.full(

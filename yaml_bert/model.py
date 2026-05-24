@@ -5,12 +5,14 @@ import torch.nn as nn
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
+from yaml_bert.tree_bias import TreeBias
 
 
 class YamlBertModel(nn.Module):
     """YAML-BERT: Transformer encoder with tree positional encoding.
 
     Two prediction heads: simple (bigram) + kind-specific (trigram).
+    Optional tree-distance attention bias (v7).
     """
 
     def __init__(
@@ -22,6 +24,7 @@ class YamlBertModel(nn.Module):
     ) -> None:
         super().__init__()
         self.embedding: YamlBertEmbedding = embedding
+        self.num_heads: int = config.num_heads
 
         encoder_layer: nn.TransformerEncoderLayer = nn.TransformerEncoderLayer(
             d_model=config.d_model,
@@ -37,6 +40,10 @@ class YamlBertModel(nn.Module):
         self.kind_head: nn.Linear = nn.Linear(config.d_model, kind_vocab_size)
         self.loss_fn: nn.CrossEntropyLoss = nn.CrossEntropyLoss(ignore_index=-100)
 
+        self.tree_bias: TreeBias | None = (
+            TreeBias(num_heads=config.num_heads) if config.tree_bias_enabled else None
+        )
+
     def forward(
         self,
         token_ids: torch.Tensor,
@@ -44,9 +51,20 @@ class YamlBertModel(nn.Module):
         depths: torch.Tensor,
         sibling_indices: torch.Tensor,
         padding_mask: torch.Tensor | None = None,
+        tree_distances: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         x: torch.Tensor = self.embedding(token_ids, node_types, depths, sibling_indices)
-        x = self.encoder(x, src_key_padding_mask=padding_mask)
+
+        # If tree_bias is enabled and a distance matrix is provided, compute
+        # an additive per-(batch, head, i, j) attention bias and pass it as
+        # the encoder's attn_mask. nn.TransformerEncoder applies the same
+        # mask at every layer — fine because the bias is structural and
+        # layer-independent.
+        attn_mask: torch.Tensor | None = None
+        if self.tree_bias is not None and tree_distances is not None:
+            attn_mask = self.tree_bias(tree_distances)  # (B*num_heads, N, N)
+
+        x = self.encoder(x, mask=attn_mask, src_key_padding_mask=padding_mask)
         simple_logits: torch.Tensor = self.simple_head(x)
         kind_logits: torch.Tensor = self.kind_head(x)
         return simple_logits, kind_logits
@@ -75,3 +93,11 @@ class YamlBertModel(nn.Module):
 
         total: torch.Tensor = simple_loss + kind_loss
         return total, {"simple": simple_loss.item(), "kind": kind_loss.item()}
+
+
+def checkpoint_has_tree_bias(state_dict: dict) -> bool:
+    """True iff a checkpoint's model_state_dict contains tree-bias weights.
+    Use this at load time to decide whether to instantiate the model with
+    `tree_bias_enabled=True` (v7+) or `False` (v6.1 and earlier).
+    """
+    return any(k.startswith("tree_bias.") for k in state_dict)

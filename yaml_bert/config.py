@@ -25,6 +25,7 @@ class YamlBertConfig:
     max_depth: int = 16
     max_sibling: int = 32
     tree_pos_variant: TreePosVariant = TreePosVariant.FULL
+    tree_bias_enabled: bool = True   # v7: per-(distance, head) attention bias from tree distance
 
     # Training
     mask_prob: float = 0.15

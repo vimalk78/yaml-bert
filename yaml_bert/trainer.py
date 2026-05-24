@@ -75,6 +75,7 @@ class YamlBertTrainer:
                     depths=batch["depths"],
                     sibling_indices=batch["sibling_indices"],
                     padding_mask=batch["padding_mask"],
+                    tree_distances=batch.get("tree_distances"),
                 )
 
                 loss, breakdown = self.model.compute_loss(

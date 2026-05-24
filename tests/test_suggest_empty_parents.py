@@ -112,7 +112,12 @@ VOCAB_PATH = os.path.join(
 
 @pytest.fixture(scope="module")
 def model_and_vocab():
-    """Load v6.1 model and vocab once per module. Skips if missing."""
+    """Load v6.1 model and vocab once per module. Skips if missing.
+
+    v6.1 was trained without tree_bias (v7 addition), so we construct the
+    model with tree_bias_enabled=False to match the checkpoint's
+    architecture exactly.
+    """
     if not (os.path.exists(CHECKPOINT_PATH) and os.path.exists(VOCAB_PATH)):
         pytest.skip("v6.1 checkpoint not available")
     import torch
@@ -122,7 +127,7 @@ def model_and_vocab():
     from yaml_bert.vocab import Vocabulary
 
     vocab = Vocabulary.load(VOCAB_PATH)
-    config = YamlBertConfig()
+    config = YamlBertConfig(tree_bias_enabled=False)  # v6.1 didn't have tree_bias
     emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
