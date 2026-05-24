@@ -33,6 +33,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold", type=float, default=0.3, help="Confidence threshold (default: 0.3)")
     parser.add_argument("--format", type=str, choices=["text", "json"], default="text")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--debug", action="store_true",
+                        help="Print per-parent diagnostic: head used, existing keys, "
+                             "top-K raw candidates with status (KEEP/EXIST/BELOW/MGMT/DROP)")
     return parser.parse_args()
 
 
@@ -164,7 +167,10 @@ def main() -> None:
             except Exception:
                 pass
 
-            suggestions, skipped = suggest_missing_fields(model, vocab, doc_text, threshold=args.threshold)
+            suggestions, skipped = suggest_missing_fields(
+                model, vocab, doc_text,
+                threshold=args.threshold, verbose=args.debug,
+            )
             print_report(suggestions, source=doc_source, fmt=args.format, skipped=skipped)
             total_suggestions += len(suggestions)
             total_docs += 1

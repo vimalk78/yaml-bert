@@ -165,7 +165,7 @@ def _detect_kind(yaml_text: str) -> str:
     return m.group(1) if m else "?"
 
 
-def _suggest_one(yaml_text: str, threshold: float, top_k: int) -> str:
+def _suggest_one(yaml_text: str, threshold: float) -> str:
     n_lines = len(yaml_text.splitlines())
     if n_lines > MAX_LINES_PER_DOC:
         return (
@@ -179,7 +179,7 @@ def _suggest_one(yaml_text: str, threshold: float, top_k: int) -> str:
     try:
         suggestions, _skipped = suggest_missing_fields(
             MODEL, VOCAB, yaml_text,
-            threshold=threshold, top_k=top_k,
+            threshold=threshold,
         )
     except Exception as e:
         return f"**Parse error:**\n```\n{e}\n```"
@@ -191,7 +191,7 @@ def _suggest_one(yaml_text: str, threshold: float, top_k: int) -> str:
     return _format_suggestions(suggestions)
 
 
-def suggest(yaml_text: str, threshold: float, top_k: int) -> str:
+def suggest(yaml_text: str, threshold: float) -> str:
     yaml_text = (yaml_text or "").strip()
     if not yaml_text:
         return "_Paste a YAML manifest above to see missing-field suggestions._"
@@ -202,14 +202,14 @@ def suggest(yaml_text: str, threshold: float, top_k: int) -> str:
 
     # Single doc: skip the document header for cleaner output
     if len(docs) == 1:
-        return _suggest_one(docs[0], threshold, top_k)
+        return _suggest_one(docs[0], threshold)
 
     # Multi-doc: prefix each doc's output with a kind/index header
     blocks: list[str] = []
     for i, doc_text in enumerate(docs, 1):
         kind = _detect_kind(doc_text)
         header = f"### Document {i}: `{kind}`"
-        blocks.append(header + "\n\n" + _suggest_one(doc_text, threshold, top_k))
+        blocks.append(header + "\n\n" + _suggest_one(doc_text, threshold))
     return "\n\n---\n\n".join(blocks)
 
 
@@ -503,21 +503,16 @@ Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
                 label="YAML input",
                 value=EXAMPLE_NGINX,
             )
-            with gr.Row():
-                threshold = gr.Slider(
-                    minimum=0.05, maximum=0.95, value=0.1, step=0.05,
-                    label="Confidence threshold",
-                )
-                top_k = gr.Slider(
-                    minimum=3, maximum=20, value=10, step=1,
-                    label="Top-K predictions per position",
-                )
+            threshold = gr.Slider(
+                minimum=0.05, maximum=0.95, value=0.1, step=0.05,
+                label="Confidence threshold",
+            )
             submit = gr.Button("Suggest missing fields", variant="primary")
 
         with gr.Column(scale=1):
             output = gr.Markdown(label="Suggestions", value="")
 
-    submit.click(fn=suggest, inputs=[yaml_input, threshold, top_k], outputs=output)
+    submit.click(fn=suggest, inputs=[yaml_input, threshold], outputs=output)
     # No auto-trigger on yaml_input.change — typing/pasting a long YAML would
     # fire many inference requests and back up the queue. Button click only.
 
