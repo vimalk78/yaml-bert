@@ -21,3 +21,10 @@ docs/ml-quiz.md
 *.pdf
 from-grok.md
 data/
+
+# HF Space deployable bundle — model code + checkpoint copied in at deploy time
+hf-space/yaml_bert/
+hf-space/model/
+
+# Override *.txt for the Space's requirements.txt (it must be tracked)
+!hf-space/requirements.txt

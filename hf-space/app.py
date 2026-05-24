@@ -43,8 +43,8 @@ _log("yaml_bert imported")
 
 # ----- Model loading (once at startup) -----
 
-DEFAULT_CHECKPOINT = "output_v6.1_lever1_only_seed42/checkpoints/yaml_bert_v4_epoch_30.pt"
-DEFAULT_VOCAB = "output_v6.1_lever1_only_seed42/vocab.json"
+DEFAULT_CHECKPOINT = "model/yaml_bert.pt"
+DEFAULT_VOCAB = "model/vocab.json"
 
 
 def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vocabulary]:
