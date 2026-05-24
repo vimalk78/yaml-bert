@@ -1,7 +1,21 @@
 """v8 dataset extensions: children-info precompute for tree aggregator."""
 from __future__ import annotations
 
+import re
+
 from yaml_bert.types import NodeType, YamlNode
+
+
+_LIST_INDEX_RE = re.compile(r"\.\d+$")
+
+
+def _strip_trailing_list_index(path: str) -> str:
+    """Strip a trailing numeric segment from a parent_path.
+
+    E.g., 'spec.containers.0' -> 'spec.containers'.
+    Returns the path unchanged if no trailing numeric segment exists.
+    """
+    return _LIST_INDEX_RE.sub("", path)
 
 
 def compute_children_info(nodes: list[YamlNode]) -> dict:
@@ -11,6 +25,14 @@ def compute_children_info(nodes: list[YamlNode]) -> dict:
     whose parent_path equals this key's full_path. (VALUE nodes are leaves —
     their hidden states are used in the aggregator without being treated as
     "children" of any KEY for subtree purposes.)
+
+    For KEYs inside list items, parent_path ends in a numeric list index
+    (e.g., 'spec.containers.0'), but the linearizer never emits a synthetic
+    list-item node, so a direct lookup misses. We strip the trailing numeric
+    segment and link to the list-key itself. This flattens all list items
+    into their list parent — per-item grouping is lost, but the aggregator
+    still produces a meaningful doc vector. Phase 1 may add synthetic
+    list-item nodes if per-item grouping matters.
 
     Returns a dict with:
         children_of: list[list[int]] — children's positions per node
@@ -42,8 +64,17 @@ def compute_children_info(nodes: list[YamlNode]) -> dict:
 
     for p in key_positions:
         parent_path = nodes[p].parent_path
-        if parent_path and parent_path in path_to_key_pos:
-            parent_pos = path_to_key_pos[parent_path]
+        if not parent_path:
+            continue
+        # Try direct lookup first
+        parent_pos = path_to_key_pos.get(parent_path)
+        if parent_pos is None:
+            # Try with trailing list index stripped
+            # (e.g., "spec.containers.0" -> "spec.containers")
+            stripped = _strip_trailing_list_index(parent_path)
+            if stripped != parent_path:
+                parent_pos = path_to_key_pos.get(stripped)
+        if parent_pos is not None:
             parent_of[p] = parent_pos
             children_of[parent_pos].append(p)
 

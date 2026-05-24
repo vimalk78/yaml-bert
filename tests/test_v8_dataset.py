@@ -44,3 +44,99 @@ spec:
 
     assert info["parent_of"][selector_pos] == spec_pos
     assert info["parent_of"][matchLabels_pos] == selector_pos
+
+
+def test_compute_children_info_list_of_mappings():
+    """KEYs inside list items should link to the list-key (not be orphaned).
+
+    For 'spec.containers' as a list of dicts, the linearizer assigns each
+    inner KEY a parent_path like 'spec.containers.0'. Since no node has that
+    full_path, we strip the trailing numeric segment and link to
+    'spec.containers'. All inner KEYs across all items become children of
+    the list key.
+    """
+    yaml_str = """\
+spec:
+  containers:
+  - name: a
+    image: x
+  - name: b
+    image: y
+"""
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
+
+    # Find the list-key 'containers' (there should be exactly one)
+    containers_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "containers"
+    ]
+    assert len(containers_positions) == 1
+    containers_pos = containers_positions[0]
+
+    # Find each name/image position. There are two of each (item0 and item1).
+    name_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "name"
+    ]
+    image_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "image"
+    ]
+    assert len(name_positions) == 2
+    assert len(image_positions) == 2
+
+    # All 4 inner KEYs are children of containers (per-item grouping lost)
+    children = info["children_of"][containers_pos]
+    for p in name_positions + image_positions:
+        assert p in children, (
+            f"Position {p} ({nodes[p].token}, parent_path="
+            f"{nodes[p].parent_path!r}) is not a child of containers"
+        )
+        assert info["parent_of"][p] == containers_pos
+
+
+def test_compute_children_info_list_of_scalars():
+    """List of scalars (e.g., args) has no inner KEYs; should not crash.
+
+    The list values are LIST_VALUE leaves, not KEYs, so 'args' has no KEY
+    children. This must not crash and must produce a valid (empty) child list.
+    """
+    yaml_str = """\
+args:
+  - --foo
+  - --bar
+"""
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
+
+    args_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "args"
+    ]
+    assert len(args_positions) == 1
+    args_pos = args_positions[0]
+
+    # args is a root KEY with no KEY children
+    assert info["parent_of"][args_pos] == -1
+    assert info["children_of"][args_pos] == []
+
+
+def test_compute_children_info_multi_root():
+    """Top-level KEYs at root depth have parent_of == -1."""
+    yaml_str = "apiVersion: v1\nkind: Pod\n"
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
+
+    by_token = {nodes[p].token: p for p in info["key_positions"]}
+    assert "apiVersion" in by_token
+    assert "kind" in by_token
+
+    assert info["parent_of"][by_token["apiVersion"]] == -1
+    assert info["parent_of"][by_token["kind"]] == -1
+
+
+def test_compute_children_info_empty_input():
+    """Empty node list returns all-empty lists without crashing."""
+    info = compute_children_info([])
+    assert info["children_of"] == []
+    assert info["parent_of"] == []
+    assert info["key_positions"] == []
+    assert info["depth_of"] == []
+    assert info["full_path_of"] == []
