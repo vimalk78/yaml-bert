@@ -55,8 +55,10 @@ def _compute_losses(out, batch, device, recon_enabled: bool, recon_weight: float
     logits, _, recon_logits = out
     labels = batch["atomic_labels"].to(device)
     zero = torch.tensor(0.0, device=device)
-    # Guard: if all positions are ignored (no masked tokens in this batch),
-    # cross_entropy returns NaN. Skip MLM loss for this batch instead.
+    # When every position is -100 (ignored), cross_entropy returns NaN.
+    # We replace it with a constant zero — this batch contributes no gradient.
+    # The downstream `total_loss.requires_grad` guard in the training loop
+    # will then skip backward+step for this batch.
     if (labels != -100).any():
         mlm_loss = F.cross_entropy(
             logits.view(-1, logits.size(-1)),
@@ -171,7 +173,7 @@ def main() -> None:
                               pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
                             shuffle=False, collate_fn=v8_collate_fn,
-                            num_workers=num_workers)
+                            num_workers=num_workers, pin_memory=True)
 
     print("Step 4: Training")
     train_start = time.time()
@@ -187,12 +189,13 @@ def main() -> None:
             total_loss, mlm_loss, recon_loss = _compute_losses(
                 out, batch, device, recon_enabled, args.recon_weight,
             )
+            if not torch.isfinite(total_loss):
+                print(f"  !! NaN/Inf loss at batch {n_batches + 1}; "
+                      f"stopping before backward to avoid corrupting weights")
+                return
             if total_loss.requires_grad:
                 total_loss.backward()
                 optimizer.step()
-            if not torch.isfinite(total_loss):
-                print(f"  !! NaN/Inf loss at batch {n_batches + 1}; stopping early")
-                return
             sums["total"] += total_loss.item()
             sums["mlm"] += mlm_loss.item()
             sums["recon"] += recon_loss.item()
