@@ -17,6 +17,7 @@ import torch.nn as nn
 from yaml_bert.aggregator import TreeAggregator
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
+from yaml_bert.reconstruction_head import ReconstructionHead
 
 
 class V8Model(nn.Module):
@@ -51,12 +52,27 @@ class V8Model(nn.Module):
         # pos_emb = depth_embedding(root_depth) + sibling_embedding(root_sibling)
         # Each embedding maps into d_model, so d_pos = 2 * d_model.
         d_pos = 2 * config.d_model
-        from yaml_bert.reconstruction_head import ReconstructionHead
         self.recon_head = ReconstructionHead(
             d_model=config.d_model,
             d_pos=d_pos,
             atomic_vocab_size=atomic_vocab_size,
         )
+
+        # Recon path uses self.embedding.depth_embedding and sibling_embedding
+        # directly — both must be present. Variants NO_DEPTH/NO_SIBLING/SEQUENTIAL
+        # set those to None, which would crash forward. Surface the constraint
+        # at init time with a clear error.
+        if config.recon_enabled:
+            if self.embedding.depth_embedding is None or \
+               self.embedding.sibling_embedding is None:
+                raise ValueError(
+                    "V8Model: recon_enabled=True requires tree_pos_variant=FULL "
+                    f"(got variant where depth_embedding="
+                    f"{self.embedding.depth_embedding} and sibling_embedding="
+                    f"{self.embedding.sibling_embedding}). The reconstruction "
+                    "head uses both depth and sibling embeddings for the root "
+                    "position embedding."
+                )
 
     def forward(
         self,
