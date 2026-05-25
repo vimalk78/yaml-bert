@@ -151,9 +151,16 @@ def test_aggregator_subtree_mask_excludes_positions_from_doc_vec():
     torch.manual_seed(0)
     hidden = torch.randn(B, N, 8)
 
-    # No-mask baseline
+    # No-mask baseline — use SAME vectorized path as the masked run so a
+    # divergence is attributable to the mask, not to a cross-path difference.
     agg = TreeAggregator(d_model=8)
-    _, doc_no_mask = agg(hidden, batch["batch_info"])
+    _, doc_no_mask = agg(
+        hidden, batch["batch_info"],
+        parent_of_tensor=batch["parent_of_tensor"],
+        top_level_key_mask=batch["top_level_key_mask"],
+        edges_by_depth=batch["edges_by_depth"],
+        parents_by_depth=batch["parents_by_depth"],
+    )
 
     # Mask the entire spec subtree (spec + x + y)
     sm = torch.zeros((B, N), dtype=torch.bool)

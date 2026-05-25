@@ -155,6 +155,12 @@ class TreeAggregator(nn.Module):
         B, N, d = hidden_states.shape
         subtree_vecs = hidden_states.clone()
 
+        # Hoist mask-on-device once; reused throughout this forward pass.
+        sm: torch.Tensor | None = (
+            subtree_mask.to(hidden_states.device)
+            if subtree_mask is not None else None
+        )
+
         # Process depths deepest-first.
         # parents_by_depth[d] = (P, 2) of [doc_idx, parent_pos]
         # edges_by_depth[d]   = (E, 3) of [doc_idx, child_pos, parent_pos]
@@ -167,8 +173,7 @@ class TreeAggregator(nn.Module):
             parent_pos_e = edges[:, 2]  # (E,)
 
             # Filter edges where either endpoint is in a masked subtree
-            if subtree_mask is not None:
-                sm = subtree_mask.to(hidden_states.device)
+            if sm is not None:
                 keep_edge = ~(sm[doc_idx_e, child_pos] | sm[doc_idx_e, parent_pos_e])
                 doc_idx_e = doc_idx_e[keep_edge]
                 child_pos = child_pos[keep_edge]
@@ -202,10 +207,8 @@ class TreeAggregator(nn.Module):
             # Filter parents: skip those that are themselves masked
             parent_doc_idx = parents[:, 0]   # (P,)
             parent_pos_p = parents[:, 1]     # (P,)
-            if subtree_mask is not None:
-                keep_parent = ~subtree_mask.to(hidden_states.device)[
-                    parent_doc_idx, parent_pos_p
-                ]
+            if sm is not None:
+                keep_parent = ~sm[parent_doc_idx, parent_pos_p]
                 parent_doc_idx = parent_doc_idx[keep_parent]
                 parent_pos_p = parent_pos_p[keep_parent]
 
@@ -224,10 +227,8 @@ class TreeAggregator(nn.Module):
 
         # doc_vec: masked positions excluded from top-level mean
         effective_top_level = top_level_key_mask
-        if subtree_mask is not None:
-            effective_top_level = top_level_key_mask & (~subtree_mask.to(
-                hidden_states.device
-            ))
+        if sm is not None:
+            effective_top_level = top_level_key_mask & ~sm
 
         mask_f = effective_top_level.to(hidden_states.dtype).unsqueeze(-1)  # (B, N, 1)
         weighted = subtree_vecs * mask_f                                     # (B, N, d)
