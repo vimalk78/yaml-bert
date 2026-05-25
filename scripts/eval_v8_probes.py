@@ -13,6 +13,7 @@ import _setup_path  # noqa: F401
 import argparse
 import os
 import pickle
+import re
 from collections import Counter
 
 import numpy as np
@@ -21,12 +22,56 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
 from yaml_bert.dataset import _extract_kind
-from yaml_bert.types import YamlNode
+from yaml_bert.types import NodeType, YamlNode
 
 
-def _has_token(nodes: list[YamlNode], token: str) -> bool:
-    """Return True if any node in the document has the given token."""
-    return any(n.token == token for n in nodes)
+# Structural positions where 'containers' / 'initContainers' are workload specs.
+_CONTAINERS_PARENT_PATHS = frozenset({"spec", "spec.template.spec"})
+
+# Matches spec[.template.spec].(containers|initContainers).<digit(s)>
+_VOLUME_MOUNTS_PATH_RE = re.compile(
+    r"^spec(\.template\.spec)?\.(containers|initContainers)\.\d+$"
+)
+
+
+def _label_has_workload_field(nodes: list[YamlNode], field_name: str) -> bool:
+    """True if any KEY node has token=field_name at a workload spec position.
+
+    Accepted parent_paths: 'spec' (Pod) or 'spec.template.spec' (Deployment /
+    StatefulSet / DaemonSet).  Rejects accidental occurrences in ConfigMap data,
+    annotations, etc.
+    """
+    for n in nodes:
+        if n.node_type not in (NodeType.KEY, NodeType.LIST_KEY):
+            continue
+        if n.token != field_name:
+            continue
+        if n.parent_path in _CONTAINERS_PARENT_PATHS:
+            return True
+    return False
+
+
+def _label_has_containers(nodes: list[YamlNode]) -> bool:
+    return _label_has_workload_field(nodes, "containers")
+
+
+def _label_has_init_containers(nodes: list[YamlNode]) -> bool:
+    return _label_has_workload_field(nodes, "initContainers")
+
+
+def _label_has_volume_mounts(nodes: list[YamlNode]) -> bool:
+    """True if any KEY node 'volumeMounts' sits inside a container list item.
+
+    parent_path must match: spec[.template.spec].(containers|initContainers).<N>
+    """
+    for n in nodes:
+        if n.node_type not in (NodeType.KEY, NodeType.LIST_KEY):
+            continue
+        if n.token != "volumeMounts":
+            continue
+        if _VOLUME_MOUNTS_PATH_RE.match(n.parent_path):
+            return True
+    return False
 
 
 def _build_labels(cached_docs: list[list[YamlNode]], top_k_kinds: int = 10) -> dict:
@@ -37,28 +82,25 @@ def _build_labels(cached_docs: list[list[YamlNode]], top_k_kinds: int = 10) -> d
         kind_names:  list of kind strings (index → name)
         has_containers, has_init_containers, has_volume_mounts: int (0/1) arrays
     """
-    kinds = [_extract_kind(doc) for doc in cached_docs]
-    counter = Counter(k for k in kinds if k)
+    kinds = [_extract_kind(nodes) for nodes in cached_docs]
+    counter = Counter(k for k in kinds if k is not None)
     top_kinds = [k for k, _ in counter.most_common(top_k_kinds)]
     kind_to_idx = {k: i for i, k in enumerate(top_kinds)}
     kind_labels = np.array(
         [kind_to_idx.get(k, -1) for k in kinds], dtype=int,
     )
-    has_containers = np.array(
-        [int(_has_token(doc, "containers")) for doc in cached_docs], dtype=int,
-    )
-    has_init_containers = np.array(
-        [int(_has_token(doc, "initContainers")) for doc in cached_docs], dtype=int,
-    )
-    has_volume_mounts = np.array(
-        [int(_has_token(doc, "volumeMounts")) for doc in cached_docs], dtype=int,
-    )
     return {
         "kind_labels": kind_labels,
         "kind_names": top_kinds,
-        "has_containers": has_containers,
-        "has_init_containers": has_init_containers,
-        "has_volume_mounts": has_volume_mounts,
+        "has_containers": np.array(
+            [_label_has_containers(nodes) for nodes in cached_docs], dtype=int,
+        ),
+        "has_init_containers": np.array(
+            [_label_has_init_containers(nodes) for nodes in cached_docs], dtype=int,
+        ),
+        "has_volume_mounts": np.array(
+            [_label_has_volume_mounts(nodes) for nodes in cached_docs], dtype=int,
+        ),
     }
 
 
@@ -113,7 +155,7 @@ def main() -> None:
         cached: list[list[YamlNode]] = pickle.load(f)
     print(f"Loaded {len(cached):,} cached documents")
 
-    print(f"Building labels for {len(cached)} docs...")
+    print(f"Building labels for {len(cached)} docs from linearized nodes...")
     labels = _build_labels(cached, top_k_kinds=args.top_k_kinds)
     print(f"Top kinds: {labels['kind_names']}")
     print(
