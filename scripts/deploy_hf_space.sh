@@ -4,7 +4,7 @@
 # Usage:
 #   scripts/deploy_hf_space.sh "commit message"
 #
-# Copies the canonical yaml_bert/ package and the v6.1 checkpoint
+# Copies the canonical yaml_bert/ package and the v7 checkpoint
 # into hf-space/ (both gitignored), then uploads the whole hf-space/
 # directory to the Space repo via `hf upload`.
 
@@ -12,8 +12,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SPACE_DIR="$REPO_ROOT/hf-space"
-CHECKPOINT_SRC="$REPO_ROOT/output_v6.1_lever1_only_seed42/checkpoints/yaml_bert_v4_epoch_30.pt"
-VOCAB_SRC="$REPO_ROOT/output_v6.1_lever1_only_seed42/vocab.json"
+CHECKPOINT_SRC="$REPO_ROOT/output_v7_seed42/checkpoints/yaml_bert_v4_epoch_30.pt"
+VOCAB_SRC="$REPO_ROOT/output_v7_seed42/vocab.json"
 SPACE_REPO="vimalk78/yaml-bert"
 COMMIT_MSG="${1:-deploy: bundle update}"
 

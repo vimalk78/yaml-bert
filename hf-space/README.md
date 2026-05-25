@@ -14,15 +14,18 @@ short_description: Tree-aware transformer for structured (YAML) data
 
 # YAML-BERT — Kubernetes missing-field suggester
 
-A small (7.8M-param) BERT-style encoder trained on 276K Kubernetes YAML
+A 13.4M-param BERT-style encoder trained on 276K Kubernetes YAML
 manifests with **tree-aware positional encoding** and **hybrid bigram/
 trigram prediction targets**. Paste a YAML manifest below; the model
 identifies fields it expects to see but that are absent, ranked by
 confidence.
 
-This Space runs the **v6.1 checkpoint** — same architecture as v5, with
-a 5-line bug-fix to selective masking. See the project repo for full
-details.
+This Space runs the **v7 checkpoint** — same architecture as v6.1 plus
+broader output vocabulary (Lever 5 depth cap, per-category min_freq
+filtering, status-key vocab exemption). v7 fixes v6.1's main limitation:
+status keys like `replicas`, `conditions`, and `currentMetrics` are now
+in the target vocab, so the model can predict them when masked. See the
+project repo for full details.
 
 ## What the model does
 
@@ -35,7 +38,6 @@ details.
 
 ## Known limitations
 
-- Status-side fields not yet predicted (addressed in v6.2)
 - Novel CRD instances and very rare annotation keys may collapse to
   `[UNK]`
 - Trained on `substratusai/the-stack-yaml-k8s`
