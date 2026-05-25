@@ -11,6 +11,7 @@ import time
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
+from tqdm.auto import tqdm
 
 from yaml_bert.cache import build_or_load_cache
 from yaml_bert.config import YamlBertConfig
@@ -84,8 +85,14 @@ def _dump_doc_vecs(model, dataset, batch_size, device, recon_enabled,
                        collate_fn=v8_collate_fn, num_workers=num_workers)
     doc_vecs: list[torch.Tensor] = []
     doc_kinds: list[str] = []
+    dump_iter = tqdm(
+        loader,
+        desc=f"dump → {os.path.basename(output_path)}",
+        mininterval=30,
+        dynamic_ncols=True,
+    )
     with torch.no_grad():
-        for batch_idx, batch in enumerate(loader):
+        for batch_idx, batch in enumerate(dump_iter):
             _, dvec, _ = _forward_v8(model, batch, device, recon_enabled)
             doc_vecs.append(dvec.cpu())
             for j in range(dvec.size(0)):
@@ -190,7 +197,15 @@ def main() -> None:
         model.train()
         sums = {"total": 0.0, "mlm": 0.0, "recon": 0.0}
         n_batches = 0
-        for batch in train_loader:
+        # tqdm with mininterval=30 keeps jl-logs readable on long runs —
+        # one line every 30 seconds, not per batch.
+        train_iter = tqdm(
+            train_loader,
+            desc=f"epoch {epoch+1}/{args.epochs} train",
+            mininterval=30,
+            dynamic_ncols=True,
+        )
+        for batch in train_iter:
             optimizer.zero_grad()
             out = _forward_v8(model, batch, device, recon_enabled)
             total_loss, mlm_loss, recon_loss = _compute_losses(
@@ -207,6 +222,12 @@ def main() -> None:
             sums["mlm"] += mlm_loss.item()
             sums["recon"] += recon_loss.item()
             n_batches += 1
+            # Live loss in tqdm postfix
+            if n_batches % 50 == 0:
+                train_iter.set_postfix(
+                    mlm=f"{sums['mlm']/n_batches:.3f}",
+                    recon=f"{sums['recon']/n_batches:.3f}",
+                )
 
         avg = {k: v / max(1, n_batches) for k, v in sums.items()}
 
@@ -214,8 +235,14 @@ def main() -> None:
         model.eval()
         val_sums = {"total": 0.0, "mlm": 0.0, "recon": 0.0}
         n_val = 0
+        val_iter = tqdm(
+            val_loader,
+            desc=f"epoch {epoch+1}/{args.epochs} val",
+            mininterval=30,
+            dynamic_ncols=True,
+        )
         with torch.no_grad():
-            for vb in val_loader:
+            for vb in val_iter:
                 out = _forward_v8(model, vb, device, recon_enabled)
                 tl, ml, rl = _compute_losses(
                     out, vb, device, recon_enabled, args.recon_weight,
