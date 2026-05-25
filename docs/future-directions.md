@@ -358,6 +358,54 @@ post-processing reconstructs the compound path from atomic prediction
 Each builds on a pre-computed embedding corpus, so the infrastructure
 compounds.
 
+### v8.1 candidate — shrink value_vocab dramatically
+
+Empirical finding from inspecting the v8 276K vocab.json: the
+`value_vocab` (38,362 entries at `value_min_freq=10`) is dominated by
+user-specific junk that doesn't generalize:
+
+- Random port numbers (`50060`, `35697`, ...)
+- CRD descriptions — full English sentences from K8s API schemas
+- Code blocks pasted into ConfigMap `data:` (terraform, scripts)
+- App-specific names (`menu-api`, `hipster-frontend`, ...)
+- CLI args (`--upstream=http://...`, `--canary-image`)
+
+Of ~40 random samples, only 2 looked schema-relevant. The TOP of the
+vocab is essential (kinds, apiVersions, K8s enums, TCP/http, common
+booleans/numerics) but the long tail is wasted capacity.
+
+`value_embedding` table is 38,362 × 256 = **9.8M params, ~44% of the
+22.5M model**. Most of those params memorize user-specific strings.
+
+Frequency distribution shows the curve is sharply concentrated:
+
+| value_min_freq | tokens | embed params | corpus coverage |
+|---|---|---|---|
+| 10 (current) | 38,344 | 9.8M | 85.6% |
+| 100 | 3,915 | 1.0M | 70.2% |
+| 500 | 935 | 0.24M | 59.2% |
+| 1000 | 491 | 0.13M | 53.7% |
+
+Retraining v8 with `value_min_freq=100` would shrink the model by
+~9M params (22.5M → ~14M) while keeping all schema-meaningful values.
+Long-tail values would map to `[UNK]` — fine because v8 treats VALUEs
+as second-class anyway (never aggregated into doc_vec, never predicted
+by Token Head). The encoder still sees value POSITIONS via positional
+embeddings + node_type — it just doesn't get a unique vector per
+random container name.
+
+Suggested v8.1 mini-cycle:
+- Retrain at `value_min_freq=100` (and maybe `=500` in parallel) on
+  the 276K corpus
+- Run the full 4-test benchmark + 15 probes
+- Acceptance gate: zero capability regression vs current v8 MLM+recon
+- If passes: deploy the smaller model. Re-upload to HF Space at
+  ~14M params instead of 22.5M.
+
+Cost: ~$6 (two parallel runs) + ~1 day analysis. Big payoff if it
+works: smaller model, smaller vocab.json, less embedding-memorization
+of user payload, less storage / upload time / inference memory.
+
 ## Note on scaling
 
 YAML is not language. It's a structured serialization format with
