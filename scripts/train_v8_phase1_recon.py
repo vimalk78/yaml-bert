@@ -88,7 +88,7 @@ def _dump_doc_vecs(model, dataset, batch_size, device, recon_enabled,
     dump_iter = tqdm(
         loader,
         desc=f"dump → {os.path.basename(output_path)}",
-        mininterval=30,
+        mininterval=2,
         dynamic_ncols=True,
     )
     with torch.no_grad():
@@ -202,7 +202,7 @@ def main() -> None:
         train_iter = tqdm(
             train_loader,
             desc=f"epoch {epoch+1}/{args.epochs} train",
-            mininterval=30,
+            mininterval=2,
             dynamic_ncols=True,
         )
         for batch in train_iter:
@@ -238,7 +238,7 @@ def main() -> None:
         val_iter = tqdm(
             val_loader,
             desc=f"epoch {epoch+1}/{args.epochs} val",
-            mininterval=30,
+            mininterval=2,
             dynamic_ncols=True,
         )
         with torch.no_grad():
