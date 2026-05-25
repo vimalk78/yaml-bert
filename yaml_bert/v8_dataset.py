@@ -115,6 +115,24 @@ class V8Dataset(Dataset):
         self.vocab = vocab
         self.mask_prob = config.mask_prob
         self.max_seq_len = config.max_seq_len
+        self.recon_enabled = config.recon_enabled
+
+        # Precompute per-doc children_info AND descendant cache (subtree picker
+        # uses descendants on every __getitem__ call; cache once at init).
+        self._cached_children_info: list[dict] = []
+        self._cached_descendants: list[dict[int, set[int]] | None] = []
+        for doc in documents:
+            ci = compute_children_info(doc[: self.max_seq_len])
+            self._cached_children_info.append(ci)
+            if self.recon_enabled:
+                from yaml_bert.subtree_masking import descendants_of
+                desc_cache: dict[int, set[int]] = {}
+                for kp in ci["key_positions"]:
+                    if ci["children_of"][kp]:
+                        desc_cache[kp] = descendants_of(kp, ci["children_of"])
+                self._cached_descendants.append(desc_cache)
+            else:
+                self._cached_descendants.append(None)
 
     def __len__(self) -> int:
         return len(self.documents)
@@ -142,6 +160,7 @@ class V8Dataset(Dataset):
         mask_id: int = self.vocab.special_tokens["[MASK]"]
         unk_id: int = self.vocab.special_tokens["[UNK]"]
 
+        mlm_masked_positions: set[int] = set()
         for i, node in enumerate(nodes):
             if node.node_type not in _MASKABLE_TYPES:
                 continue
@@ -151,6 +170,7 @@ class V8Dataset(Dataset):
             if atomic_id == unk_id:
                 continue  # skip [UNK] targets (Lever 1)
             atomic_labels[i] = atomic_id
+            mlm_masked_positions.add(i)
             r = random.random()
             if r < 0.8:
                 token_ids[i] = mask_id
@@ -160,21 +180,73 @@ class V8Dataset(Dataset):
                     len(self.vocab.key_vocab) + len(self.vocab.special_tokens) - 1,
                 )
 
-        return {
+        result = {
             "token_ids": torch.tensor(token_ids, dtype=torch.long),
             "node_types": torch.tensor(node_types, dtype=torch.long),
             "depths": torch.tensor(depths, dtype=torch.long),
             "sibling_indices": torch.tensor(sibling_indices, dtype=torch.long),
             "atomic_labels": torch.tensor(atomic_labels, dtype=torch.long),
-            "children_info": compute_children_info(nodes),
+            "children_info": self._cached_children_info[idx],
         }
+
+        if self.recon_enabled:
+            from yaml_bert.subtree_masking import pick_subtrees, bag_of_keys_target
+            ci = self._cached_children_info[idx]
+            picked_roots = pick_subtrees(
+                N=len(nodes),
+                key_positions=ci["key_positions"],
+                depth_of=ci["depth_of"],
+                children_of=ci["children_of"],
+                mlm_masked_positions=mlm_masked_positions,
+                rng=random,
+                descendants_cache=self._cached_descendants[idx],
+            )
+            # Build subtree_mask + apply [MASK] to subtree positions
+            subtree_mask = torch.zeros(len(nodes), dtype=torch.bool)
+            picked_positions_all: set[int] = set()
+            bag_targets: list[torch.Tensor] = []
+            # position → key string lookup for bag-of-keys building
+            position_to_key_str = {
+                i: nodes[i].token
+                for i in range(len(nodes))
+                if nodes[i].node_type in (NodeType.KEY, NodeType.LIST_KEY)
+            }
+            for root_pos in picked_roots:
+                descs = self._cached_descendants[idx][root_pos]
+                picked_positions_all |= descs
+                bag_targets.append(bag_of_keys_target(
+                    subtree_positions=descs,
+                    position_to_key_str=position_to_key_str,
+                    atomic_vocab=self.vocab.atomic_target_vocab,
+                    vocab_size=self.vocab.atomic_target_vocab_size,
+                ))
+            for pos in picked_positions_all:
+                subtree_mask[pos] = True
+                token_ids[pos] = mask_id
+            # Re-encode token_ids tensor since we mutated the list
+            result["token_ids"] = torch.tensor(token_ids, dtype=torch.long)
+            result["subtree_mask"] = subtree_mask
+            result["subtree_roots"] = picked_roots  # list[int]
+            result["bag_of_keys_targets"] = bag_targets  # list[Tensor (V,)]
+            result["_atomic_vocab_size"] = self.vocab.atomic_target_vocab_size
+
+        return result
+
+
+_COLLATE_NON_TENSOR_KEYS = frozenset({
+    "children_info",
+    "subtree_roots",
+    "bag_of_keys_targets",
+    "subtree_mask",  # bool tensor handled separately
+    "_atomic_vocab_size",  # int, used by collate to size empty fallback tensors
+})
 
 
 def v8_collate_fn(batch: list[dict]) -> dict:
     """Pad tensor fields, keep children_info as a list."""
     max_len = max(item["token_ids"].size(0) for item in batch)
     padded: dict[str, list[torch.Tensor]] = {
-        k: [] for k in batch[0].keys() if k != "children_info"
+        k: [] for k in batch[0].keys() if k not in _COLLATE_NON_TENSOR_KEYS
     }
     padding_masks: list[torch.Tensor] = []
     batch_info: list[dict] = []
@@ -249,4 +321,47 @@ def v8_collate_fn(batch: list[dict]) -> dict:
         d: torch.tensor(sorted(parents_set), dtype=torch.long)
         for d, parents_set in parents_set_by_depth.items()
     }
+
+    # Subtree-mask batching (only present when recon is enabled per-item).
+    if "subtree_mask" in batch[0]:
+        # subtree_mask: (B, N) bool, pad with False
+        subtree_masks: list[torch.Tensor] = []
+        for item in batch:
+            sm = item["subtree_mask"]
+            pad_len = max_len - sm.size(0)
+            if pad_len > 0:
+                subtree_masks.append(torch.cat([
+                    sm, torch.zeros(pad_len, dtype=torch.bool),
+                ]))
+            else:
+                subtree_masks.append(sm)
+        result["subtree_mask"] = torch.stack(subtree_masks)
+
+        # subtree_roots_flat: (M, 2) of [batch_idx, root_pos]; M = total roots
+        # bag_of_keys_targets_flat: (M, V_atomic)
+        flat_roots: list[tuple[int, int]] = []
+        flat_targets: list[torch.Tensor] = []
+        for b_idx, item in enumerate(batch):
+            for root_pos, target in zip(
+                item["subtree_roots"], item["bag_of_keys_targets"]
+            ):
+                flat_roots.append((b_idx, root_pos))
+                flat_targets.append(target)
+        if flat_roots:
+            result["subtree_roots_flat"] = torch.tensor(
+                flat_roots, dtype=torch.long,
+            )
+            result["bag_of_keys_targets_flat"] = torch.stack(flat_targets)
+        else:
+            # Even with recon enabled, all docs in this batch may have empty
+            # picks (small docs, no candidates). Emit empty tensors so the
+            # consumer can detect "no subtrees this batch."
+            result["subtree_roots_flat"] = torch.zeros(
+                (0, 2), dtype=torch.long,
+            )
+            v = batch[0].get("_atomic_vocab_size", 0)
+            result["bag_of_keys_targets_flat"] = torch.zeros(
+                (0, v), dtype=torch.float,
+            )
+
     return result

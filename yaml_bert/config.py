@@ -47,6 +47,8 @@ class YamlBertConfig:
 
     # v8 prototype
     v8_mode: bool = False  # Phase 0 prototype: aggregator + atomic head
+    recon_enabled: bool = False
+    recon_loss_weight: float = 0.5
 
     def __post_init__(self) -> None:
         if self.d_ff == 0:
