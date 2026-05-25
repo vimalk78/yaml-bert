@@ -8,6 +8,8 @@ The MLM-only objective trains local-context prediction (predict the masked token
 
 The v8 design spec sketched this as **subtree reconstruction**: mask a tree subtree; predict the bag of keys present in that subtree from `doc_vec`. This mini-cycle builds and validates that objective.
 
+One refinement over the v8 spec's framing: a single doc can have 1-3 masked subtrees, all sharing the same `doc_vec`. To let the head know *which* subtree it's predicting, the head also reads the position embedding of the masked subtree's root. Concretely the input is `[doc_vec ; pos_emb(masked_root)]` (see Architecture below). `doc_vec` carries the document-level information; the root position embedding disambiguates which subtree the head should predict.
+
 ## Goal
 
 Implement the reconstruction objective + 4 cheap smoke-test probes. Run a controlled comparison: MLM-only baseline vs MLM+reconstruction. Decide go/no-go for the objective based on probe deltas + reconstruction loss trajectory.
