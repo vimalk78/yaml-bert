@@ -418,6 +418,49 @@ spec:
     return capabilities
 
 
+def run_bigger_boat_tests(
+    run_test_fn,
+    show_passes: bool = False,
+    header: str = "YAML-BERT Bigger Boat",
+) -> tuple[int, int]:
+    """Run all 13 bigger-boat tests using run_test_fn(test) -> TestResult.
+
+    Returns (grand_passed, grand_total).
+    """
+    print(header)
+    print("=" * 75)
+
+    capabilities = build_bigger_boat()
+    grand_total = grand_passed = 0
+    for cap in capabilities:
+        per_test: list[TestResult] = []
+        for t in cap.tests:
+            per_test.append(run_test_fn(t))
+        passed = sum(1 for r in per_test if r.passed)
+        total = len(per_test)
+        marker = "PASS" if passed == total else "FAIL"
+        print(f"\n[{marker}] {cap.name}: {passed}/{total}")
+        for r in per_test:
+            show = (not r.passed) or show_passes
+            m = "  ✓" if r.passed else "  ✗"
+            if show:
+                top5 = ", ".join(f"{k} ({c:.1%})" for k, c in r.predictions[:5])
+                print(f"{m} {r.test_name}")
+                print(f"      top-5: {top5}")
+                if not r.passed:
+                    print(f"      reason: {r.details}")
+            else:
+                print(f"{m} {r.test_name}")
+        grand_total += total
+        grand_passed += passed
+
+    print()
+    print("=" * 75)
+    print(f"OVERALL: {grand_passed}/{grand_total} ({grand_passed / grand_total * 100:.1f}%)")
+    print("=" * 75)
+    return grand_passed, grand_total
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bigger-boat tests for YAML-BERT")
     parser.add_argument("checkpoint", type=str)
@@ -439,37 +482,12 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    print(f"YAML-BERT Bigger Boat — checkpoint epoch {checkpoint['epoch']}")
-    print("=" * 75)
+    header = f"YAML-BERT Bigger Boat — checkpoint epoch {checkpoint['epoch']}"
 
-    capabilities = build_bigger_boat()
-    grand_total = grand_passed = 0
-    for cap in capabilities:
-        per_test: list[TestResult] = []
-        for t in cap.tests:
-            per_test.append(run_test(model, vocab, t))
-        passed = sum(1 for r in per_test if r.passed)
-        total = len(per_test)
-        marker = "PASS" if passed == total else "FAIL"
-        print(f"\n[{marker}] {cap.name}: {passed}/{total}")
-        for r in per_test:
-            show = (not r.passed) or args.show_passes
-            m = "  ✓" if r.passed else "  ✗"
-            if show:
-                top5 = ", ".join(f"{k} ({c:.1%})" for k, c in r.predictions[:5])
-                print(f"{m} {r.test_name}")
-                print(f"      top-5: {top5}")
-                if not r.passed:
-                    print(f"      reason: {r.details}")
-            else:
-                print(f"{m} {r.test_name}")
-        grand_total += total
-        grand_passed += passed
+    def run_test_fn(t):
+        return run_test(model, vocab, t)
 
-    print()
-    print("=" * 75)
-    print(f"OVERALL: {grand_passed}/{grand_total} ({grand_passed / grand_total * 100:.1f}%)")
-    print("=" * 75)
+    run_bigger_boat_tests(run_test_fn, show_passes=args.show_passes, header=header)
 
 
 if __name__ == "__main__":
