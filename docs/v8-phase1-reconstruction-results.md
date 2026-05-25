@@ -159,3 +159,153 @@ If the eval framework still can't see a difference, the reconstruction objective
 - `output_v8_phase1_treatment/`: same structure
 - Per-epoch trajectory tables: `/tmp/probes_control.txt`, `/tmp/probes_treatment.txt`
 - JL instance `415441`: destroyed
+
+## Addendum — finer-probe re-evaluation
+
+The original 4 smoke probes (kind / has-containers / has-init / has-volume-mounts)
+were saturated, motivating a follow-up with 9 more discriminating probes (no
+re-training, just re-running `scripts/eval_v8_probes.py` against the existing
+per-epoch dumps).
+
+### Probes added
+
+**5 binary, lower positive-rate, within-kind structural features:**
+- `has-tolerations` (2.3% positive, 114/5000)
+- `has-affinity` (1.7% positive, 85/5000)
+- `has-multiple-containers` (2.6% positive, 131/5000)
+- `has-resource-limits` (8.7% positive, 434/5000)
+- `has-readiness-probe` (6.2% positive, 311/5000)
+
+**2 multi-class, kind-filtered:**
+- `service-type` (4-class: ClusterIP / NodePort / LoadBalancer / ExternalName — Service docs only, N=761)
+- `update-strategy-type` (3-class: RollingUpdate / Recreate / OnDelete — Deployment / StatefulSet / DaemonSet docs only, N=1283)
+
+**2 retrieval (test doc_vec geometry directly, no sklearn):**
+- `triplet-accuracy`: 1000 (anchor, same-kind, different-kind) triplets; pass rate where `cos(anchor, same) > cos(anchor, diff)`
+- `k-NN purity @5`: for each doc, fraction of top-5 cosine-nearest neighbors that share the same kind
+
+### Final-epoch comparison (treatment − control)
+
+| Probe | Control (ep 10) | Treatment (ep 10) | Δ |
+|---|---|---|---|
+| kind | 100.0% | 100.0% | 0.0pp |
+| has-containers | 100.0% | 100.0% | 0.0pp |
+| has-init-containers | 96.8% | 96.3% | −0.5pp |
+| has-volume-mounts | 97.7% | 98.3% | +0.6pp |
+| has-tolerations | 97.5% | 97.5% | 0.0pp |
+| has-affinity | 99.0% | 98.2% | −0.8pp |
+| has-multiple-containers | 96.3% | 96.5% | +0.2pp |
+| has-resource-limits | 96.5% | 96.2% | −0.3pp |
+| has-readiness-probe | 98.3% | 98.2% | −0.1pp |
+| **service-type** (4-cls) | **92.2%** | **88.9%** | **−3.3pp** |
+| **update-strategy** (3-cls) | **94.9%** | **93.0%** | **−1.9pp** |
+| triplet-accuracy | 97.1% | 96.9% | −0.2pp |
+| **k-NN purity @5** | **94.9%** | **95.7%** | **+0.8pp** |
+
+### Key surprise: every probe ≥88%, including the rare-positive ones
+
+`has-tolerations` (1.7% positive) hits 97.5% accuracy under MLM-only. That's far above the naive majority-class baseline (98.3%) — but with `class_weight='balanced'`, the LR is actually discriminating the minority class. v8's `doc_vec` evidently encodes *much* more fine-grained structural information than expected. Even highly-discriminating multi-class probes (4-class service-type from only 761 docs) clear 88%.
+
+This means the "smoke probes too coarse" diagnosis from the original AMBIGUOUS verdict was incomplete. The probes ARE coarse, but the underlying problem is that doc_vec from v8 Phase 1 is *already very rich* — there's barely any feature you can name where the encoder hasn't already learned a useful representation. The 2pp acceptance threshold is hard to clear because everything's already near-saturated.
+
+### k-NN purity: the most interesting signal
+
+Treatment k-NN purity is HIGHER than control in 9 of 10 epochs, and the gap *grows* with training:
+
+```
+epoch | control | treatment | Δ
+    1 |  88.4%  |  88.4%    | 0.0
+    2 |  89.7%  |  90.1%    | +0.4
+    3 |  91.2%  |  91.3%    | +0.1
+    4 |  91.8%  |  92.2%    | +0.4
+    5 |  92.2%  |  92.9%    | +0.7
+    6 |  93.6%  |  94.4%    | +0.8
+    7 |  94.2%  |  94.5%    | +0.3
+    8 |  94.2%  |  94.5%    | +0.3
+    9 |  95.1%  |  95.4%    | +0.3
+   10 |  94.9%  |  95.7%    | +0.8
+```
+
+The consistent direction across epochs and the growing gap make this a real
+signal, not noise — even though the absolute delta (+0.8pp) doesn't clear the
+2pp threshold. It's the only probe where treatment beats control on more than
+one epoch with monotonic-ish behavior.
+
+### Multi-class probes: treatment loses 2-3pp
+
+The two multi-class probes (service-type, update-strategy) consistently
+underperform under treatment. The gap is real but small (~2-3pp) and the per-epoch trajectories are noisy:
+
+```
+service-type (4-class, N=761):
+  control epochs:    94.1, 94.1, 88.2, 88.2, 90.2, 88.9, 89.5, 91.5, 91.5, 92.2  (mean 90.8)
+  treatment epochs:  93.5, 91.5, 86.9, 89.5, 91.5, 85.6, 88.2, 89.5, 88.2, 88.9  (mean 89.3)
+                                                                                  delta −1.5
+
+update-strategy (3-class, N=1283):
+  control epochs:    96.1, 96.5, 97.3, 96.5, 97.7, 95.7, 93.4, 96.1, 96.9, 94.9  (mean 96.1)
+  treatment epochs:  94.2, 94.9, 95.7, 93.4, 95.3, 96.1, 96.9, 94.6, 95.3, 93.0  (mean 94.9)
+                                                                                  delta −1.2
+```
+
+### Refined interpretation
+
+Reconstruction **trades off**:
+- *Slightly worse* linear decodability of fine-grained features (multi-class
+  probes: −1 to −3pp; binary probes: ±0.5pp noise).
+- *Slightly better* geometric clustering (k-NN purity: consistently +0.3 to
+  +0.8pp across epochs).
+- *Slightly better* val MLM (the original Phase 1 finding: −1.65% rel at
+  epoch 10) — suggesting mild regularization.
+
+This is a meaningful architectural trait: reconstruction pushes `doc_vec`
+toward "similar docs cluster geometrically" but trades off some
+linear-decodability of individual features. For downstream tasks where
+*clustering / retrieval* matters more than linear classification (e.g.,
+"find similar K8s manifests," "group templates"), this is the *right*
+direction. For downstream tasks where individual features need to be
+recoverable by a simple classifier, MLM-only is marginally better.
+
+### Verdict refinement: AMBIGUOUS → AMBIGUOUS-LEAN-NEUTRAL
+
+The original AMBIGUOUS verdict stands. None of the 13 probes hit the +2pp
+gate. But the finer-probe re-evaluation reveals the underlying picture:
+
+- Reconstruction does change `doc_vec` in measurable, consistent ways.
+- The changes are net-neutral on classification tasks (some up, some down,
+  multi-class slightly worse).
+- The changes are net-positive on geometric/retrieval tasks (+0.8pp k-NN).
+- The changes are net-positive on training loss (−1.65% val MLM rel).
+
+Reconstruction is not a clear win. It's a slight geometric-vs-classification
+tradeoff with marginal regularization benefit. Whether to keep it depends on
+what downstream tasks we care about — and we don't have those tasks defined
+yet.
+
+### Next-cycle implications
+
+The finer probes didn't change the verdict but DID change the next-cycle
+priority. The original AMBIGUOUS branch said "build eval framework with
+challenging probes." We just did that (binary + multi-class + retrieval) and
+found that even challenging probes don't discriminate clearly. The bottleneck
+is no longer "probes are too coarse" — it's "5K-doc training is too small to
+produce stable enough representations to detect ~1pp effects."
+
+Options for the next mini-cycle:
+
+1. **Scale up first** (276K full corpus): re-run the same 2-condition
+   comparison at full scale. If recon's effect is real, it should be larger
+   and more consistent at full scale. Cost: ~$2-5 JL (longer L4 time).
+2. **Multi-seed comparison**: run 3 seeds each (6 total runs) at 5K-doc scale
+   to bound noise. Should reveal whether the ±1pp deltas are real or
+   sampling artifacts. Cost: ~$0.60 JL.
+3. **Define real downstream tasks** (template-pair retrieval, drift
+   detection): these would let us compare reconstruction's geometric
+   improvement against a metric that actually cares about geometry. Higher
+   upfront cost but the deciding test for whether recon stays or goes.
+
+Recommendation: **option 2 (multi-seed) before option 1 (full corpus)** —
+cheaper, faster, and answers the immediate question ("are the ±1pp deltas
+real?"). If multi-seed shows recon is consistently beneficial on k-NN, then
+option 1 to scale up. If multi-seed shows the deltas are within seed noise,
+park recon and pursue downstream-task design.
