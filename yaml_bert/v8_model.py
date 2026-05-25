@@ -46,6 +46,18 @@ class V8Model(nn.Module):
         # Token Head input: [h_i ; doc_vec ; s_parent] = 3 * d_model
         self.token_head = nn.Linear(3 * config.d_model, atomic_vocab_size)
 
+        # Reconstruction Head: built unconditionally; only USED when caller
+        # passes subtree_roots_flat. Cost when unused: ~0 (no forward call).
+        # pos_emb = depth_embedding(root_depth) + sibling_embedding(root_sibling)
+        # Each embedding maps into d_model, so d_pos = 2 * d_model.
+        d_pos = 2 * config.d_model
+        from yaml_bert.reconstruction_head import ReconstructionHead
+        self.recon_head = ReconstructionHead(
+            d_model=config.d_model,
+            d_pos=d_pos,
+            atomic_vocab_size=atomic_vocab_size,
+        )
+
     def forward(
         self,
         token_ids: torch.Tensor,
@@ -59,9 +71,13 @@ class V8Model(nn.Module):
         top_level_key_mask: torch.Tensor | None = None,
         edges_by_depth: dict[int, torch.Tensor] | None = None,
         parents_by_depth: dict[int, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns (logits, doc_vec). Vectorized path activates when the
-        precomputed tensor kwargs are provided (always true at training)."""
+        subtree_mask: torch.Tensor | None = None,
+        subtree_roots_flat: torch.Tensor | None = None,
+    ) -> tuple:
+        """Returns (logits, doc_vec) or (logits, doc_vec, recon_logits).
+
+        recon_logits only returned when subtree_roots_flat is provided AND
+        has at least one row."""
         x = self.embedding(token_ids, node_types, depths, sibling_indices)
         x = self.encoder(x, src_key_padding_mask=padding_mask)
 
@@ -72,6 +88,7 @@ class V8Model(nn.Module):
             top_level_key_mask=top_level_key_mask,
             edges_by_depth=edges_by_depth,
             parents_by_depth=parents_by_depth,
+            subtree_mask=subtree_mask,
         )
 
         b, n, d = x.shape
@@ -103,5 +120,24 @@ class V8Model(nn.Module):
         doc_vec_broadcast = doc_vec.unsqueeze(1).expand(b, n, d)
         head_input = torch.cat([x, doc_vec_broadcast, s_parent], dim=-1)
         logits = self.token_head(head_input)
+
+        # Reconstruction path: only if caller provided subtree roots
+        if subtree_roots_flat is not None and subtree_roots_flat.size(0) > 0:
+            # subtree_roots_flat: (M, 2) of [batch_idx, root_pos]
+            batch_idx_per_root = subtree_roots_flat[:, 0]   # (M,)
+            root_pos_per_root = subtree_roots_flat[:, 1]    # (M,)
+
+            doc_vec_per_root = doc_vec[batch_idx_per_root]  # (M, d_model)
+
+            # Build pos_emb_per_root from the same depth/sibling embedding params
+            # already used in the embedding layer — no new parameters introduced.
+            root_depths = depths[batch_idx_per_root, root_pos_per_root]     # (M,)
+            root_siblings = sibling_indices[batch_idx_per_root, root_pos_per_root]  # (M,)
+            depth_e = self.embedding.depth_embedding(root_depths)            # (M, d_model)
+            sibling_e = self.embedding.sibling_embedding(root_siblings)      # (M, d_model)
+            pos_emb_per_root = torch.cat([depth_e, sibling_e], dim=-1)      # (M, 2*d_model)
+
+            recon_logits = self.recon_head(doc_vec_per_root, pos_emb_per_root)
+            return logits, doc_vec, recon_logits
 
         return logits, doc_vec
