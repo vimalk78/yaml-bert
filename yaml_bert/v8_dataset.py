@@ -8,6 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from yaml_bert.config import YamlBertConfig
+from yaml_bert.subtree_masking import descendants_of
 from yaml_bert.types import NodeType, YamlNode
 from yaml_bert.vocab import Vocabulary
 
@@ -121,11 +122,16 @@ class V8Dataset(Dataset):
         # uses descendants on every __getitem__ call; cache once at init).
         self._cached_children_info: list[dict] = []
         self._cached_descendants: list[dict[int, set[int]] | None] = []
+        if self.recon_enabled and len(documents) > 100:
+            import logging
+            logging.getLogger(__name__).info(
+                "V8Dataset: precomputing descendants for %d docs (recon enabled)",
+                len(documents),
+            )
         for doc in documents:
             ci = compute_children_info(doc[: self.max_seq_len])
             self._cached_children_info.append(ci)
             if self.recon_enabled:
-                from yaml_bert.subtree_masking import descendants_of
                 desc_cache: dict[int, set[int]] = {}
                 for kp in ci["key_positions"]:
                     if ci["children_of"][kp]:
