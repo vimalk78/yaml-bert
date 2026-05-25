@@ -1,8 +1,9 @@
 """YAML-BERT missing-field suggester — Gradio demo.
 
 Paste a Kubernetes YAML manifest; the model identifies fields it expects
-to see but that are absent. Runs the v6.1 checkpoint (Lever 1 — selective
-masking applied during training).
+to see but that are absent. Runs the v8 (MLM+reconstruction) checkpoint
+trained on full 276K K8s corpus — atomic-vocab prediction conditioned on
+doc_vec, with tree-aware bottom-up aggregation.
 
 Run locally:
     pip install gradio
@@ -35,8 +36,8 @@ _log(f"gradio {gr.__version__} imported")
 _log("Importing yaml_bert package...")
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
-from yaml_bert.model import YamlBertModel
-from yaml_bert.suggest import suggest_missing_fields
+from yaml_bert.v8_model import V8Model
+from yaml_bert.suggest_v8 import suggest_missing_fields_v8 as suggest_missing_fields
 from yaml_bert.vocab import Vocabulary
 _log("yaml_bert imported")
 
@@ -47,35 +48,30 @@ DEFAULT_CHECKPOINT = "model/yaml_bert.pt"
 DEFAULT_VOCAB = "model/vocab.json"
 
 
-def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vocabulary]:
+def load_model(checkpoint_path: str, vocab_path: str) -> tuple[V8Model, Vocabulary]:
     _log(f"Loading vocab from {vocab_path}")
     vocab = Vocabulary.load(vocab_path)
     _log(f"Vocab loaded: {vocab.key_vocab_size} keys, "
          f"{vocab.value_vocab_size} values, "
-         f"{vocab.simple_target_vocab_size} simple targets, "
-         f"{vocab.kind_target_vocab_size} kind targets")
+         f"{vocab.atomic_target_vocab_size} atomic targets")
 
     _log(f"Reading checkpoint file {checkpoint_path}")
     cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
-    # Detect checkpoint architecture: v7+ has tree_bias.* keys; v6.1- doesn't.
-    # Construct the config to match so load_state_dict succeeds.
-    from yaml_bert.model import checkpoint_has_tree_bias
-    has_tb = checkpoint_has_tree_bias(cp["model_state_dict"])
-    _log(f"Checkpoint architecture: tree_bias_enabled={has_tb}")
-
-    _log("Building model architecture")
-    config = YamlBertConfig(tree_bias_enabled=has_tb)
+    _log("Building V8Model architecture")
+    # recon_enabled=True is required to load checkpoints from MLM+recon training
+    # (state_dict includes recon_head weights). The recon head exists but is
+    # never invoked at inference time (no subtree_roots_flat passed in forward).
+    config = YamlBertConfig(v8_mode=True, recon_enabled=True)
     emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
     )
-    model = YamlBertModel(
+    model = V8Model(
         config=config,
         embedding=emb,
-        simple_vocab_size=vocab.simple_target_vocab_size,
-        kind_vocab_size=vocab.kind_target_vocab_size,
+        atomic_vocab_size=vocab.atomic_target_vocab_size,
     )
     _log("Model architecture ready")
 
