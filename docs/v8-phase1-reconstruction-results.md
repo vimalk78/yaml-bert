@@ -440,3 +440,32 @@ be reusable; the head and the loss are not.
    Smaller scope; might help geometric quality. Independent of contrastive.
 4. **Scale-up to 276K** — train v8 (MLM-only, no recon) at full corpus and
    re-measure. May change which findings hold.
+
+## Methodology caveat — discovered after the verdict landed
+
+All 5K experiments in this document (control + treatment runs at seeds 42, 7,
+and 123; the 4 smoke probes; the 9 finer probes; the recon NO-GO verdict)
+built vocab FROM the 5K training subset → ~427 atomic vocab → ~5.4M-param
+model. The 276K-corpus production model is ~22.5M params with ~6049 atomic
+classes (14× larger output head).
+
+This means the recon NO-GO verdict was measured on a **fundamentally
+different model** than the production target:
+
+- At 5K vocab (427 classes), the atomic-prediction task is much easier; the
+  model has fewer competing classes to discriminate. Most probes saturated
+  at >95%, leaving little room for any objective to show improvement.
+- At full vocab (6049 classes), prediction is harder; representations may
+  have more "structural pressure" to encode finer distinctions; recon may
+  pay off in ways the 5K experiments can't see.
+
+The verdict (recon NO-GO) is correct *for the small-model regime*. Whether
+it holds at production scale is **untested**. If 276K results raise a
+question we want to answer — e.g., "probes look different at full corpus
+than at 5K" — the right experiment is to rebuild the multi-seed recon
+comparison using the FULL-corpus vocab (model size = 22.5M, training data =
+5K). That'd be ~$1 and ~1.5 hours; tests whether the small-model NO-GO was
+a measurement artifact.
+
+For now: recon stays flag-off, code preserved, decision deferred. The
+methodological gap is documented; future-us can decide whether to revisit.
