@@ -83,6 +83,17 @@ The position embedding is `[depth_emb(root) ; sibling_emb(root)]` — concat of 
 
 ## Data path
 
+### When masking runs
+
+Per `V8Dataset.__getitem__` call (during training, in DataLoader workers, CPU-side, parallel with GPU work). Fresh random masks every epoch — same rationale as BERT-style MLM: prevent the model from memorizing specific masked-position patterns.
+
+**NOT baked into the corpus cache.** The descendant sets per KEY position depend only on tree shape (static per doc) and ARE cached at `V8Dataset.__init__` time — but the picking itself is per-call.
+
+### Complexity
+
+- **One-time at `V8Dataset.__init__`** (per doc): compute `descendants_of` for every KEY-with-children position via DFS. Cost per doc: `O(N · D)` where N = nodes and D = max tree depth (capped at 9). For 5K docs × ~500 ops each ≈ 2.5M ops ≈ <1s.
+- **Per `__getitem__` call**: only candidate filter + random pick. Cost: `O(K)` (K = number of KEY positions with children) plus tiny set intersections for the disjoint check. ~30-100 ops per doc. Trivial vs the existing `compute_children_info` work.
+
 ### V8Dataset.__getitem__ — subtree masking algorithm
 
 ```python
