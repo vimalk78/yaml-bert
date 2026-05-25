@@ -68,6 +68,10 @@ Treatment MLM at epoch 10: 0.8721 vs control 0.8669 → +0.6% relative. **Within
 
 Notable: treatment **val MLM is consistently lower than control** from epoch 7 onward (the model with reconstruction generalizes slightly better to the held-out 500 docs). Small effect (~1-8% relative), but directionally consistent across late epochs.
 
+## Probe method (per `scripts/eval_v8_probes.py`)
+
+For each probe: doc_vecs from the per-epoch dump → 80/20 stratified split (random_state=42) → `LogisticRegression(max_iter=2000, class_weight='balanced')` → accuracy on held-out 20%. The `class_weight='balanced'` was a refinement landed during implementation (commit `9c54b04`) — without it, the naive "always predict majority" baseline on `has-init-containers` would be 97.1% (since only 2.9% of docs are positive), making the unbalanced score nearly meaningless. The spec's original method specified `LogisticRegression(max_iter=2000)` only; the balanced variant is a strict improvement and the numbers below reflect it.
+
 ## Probe accuracies — full per-epoch trajectory
 
 **Control (MLM-only):**
