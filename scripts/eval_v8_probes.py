@@ -198,6 +198,18 @@ def _label_update_strategy_type(nodes: list[YamlNode]) -> str | None:
     return "RollingUpdate"  # default
 
 
+def _extract_apiversion(nodes: list[YamlNode]) -> str:
+    """Extract apiVersion VALUE from a doc, or empty string if absent."""
+    for i, node in enumerate(nodes):
+        if (node.token == "apiVersion"
+                and node.depth == 0
+                and node.node_type == NodeType.KEY
+                and i + 1 < len(nodes)
+                and nodes[i + 1].node_type == NodeType.VALUE):
+            return nodes[i + 1].token
+    return ""
+
+
 def _build_labels(cached_docs: list[list[YamlNode]], top_k_kinds: int = 10) -> dict:
     """Build label arrays for all classification probes from cached YamlNode lists."""
     kinds = [_extract_kind(nodes) for nodes in cached_docs]
@@ -206,6 +218,30 @@ def _build_labels(cached_docs: list[list[YamlNode]], top_k_kinds: int = 10) -> d
     kind_to_idx = {k: i for i, k in enumerate(top_kinds)}
     kind_labels = np.array(
         [kind_to_idx.get(k, -1) for k in kinds], dtype=int,
+    )
+
+    # apiVersion probe: multi-class over the top-K most common apiVersions
+    apivers = [_extract_apiversion(nodes) for nodes in cached_docs]
+    av_counter = Counter(a for a in apivers if a)
+    # Cap at 10 to keep the probe tractable; covers the long tail with -1
+    top_apivers = [a for a, _ in av_counter.most_common(10)]
+    av_to_idx = {a: i for i, a in enumerate(top_apivers)}
+    apiversion_labels = np.array(
+        [av_to_idx.get(a, -1) for a in apivers], dtype=int,
+    )
+
+    # apiVersion+Kind combined probe: K8s GroupVersionKind (GVK) — the canonical
+    # resource type identifier. Multi-class over top-K combos.
+    av_kind = [
+        f"{a}|{k}" if (a and k) else ""
+        for a, k in zip(apivers, kinds)
+    ]
+    avk_counter = Counter(c for c in av_kind if c)
+    # Top 15: covers most workload + RBAC + storage combos in typical K8s corpora
+    top_av_kinds = [c for c, _ in avk_counter.most_common(15)]
+    avk_to_idx = {c: i for i, c in enumerate(top_av_kinds)}
+    apiversion_kind_labels = np.array(
+        [avk_to_idx.get(c, -1) for c in av_kind], dtype=int,
     )
 
     # Multi-class probes: build string labels, then encode + mask
@@ -255,6 +291,11 @@ def _build_labels(cached_docs: list[list[YamlNode]], top_k_kinds: int = 10) -> d
         # New multi-class (label_filter applied per-probe via -1 sentinel)
         "service_type_labels": service_labels,
         "update_strategy_labels": strategy_labels,
+        # apiVersion + apiVersion-kind combined
+        "apiversion_labels": apiversion_labels,
+        "apiversion_names": top_apivers,
+        "apiversion_kind_labels": apiversion_kind_labels,
+        "apiversion_kind_names": top_av_kinds,
         # All kinds (for retrieval probes — not just top-K)
         "all_kinds": np.array(
             [k if k else "_unknown" for k in kinds], dtype=object,
@@ -385,6 +426,8 @@ def _eval_one_dump(doc_vecs_path: str, labels: dict) -> dict:
     kind_mask = labels["kind_labels"][:n] >= 0
     service_mask = labels["service_type_labels"][:n] >= 0
     strategy_mask = labels["update_strategy_labels"][:n] >= 0
+    av_mask = labels["apiversion_labels"][:n] >= 0
+    avk_mask = labels["apiversion_kind_labels"][:n] >= 0
 
     return {
         # Original 4
@@ -398,12 +441,19 @@ def _eval_one_dump(doc_vecs_path: str, labels: dict) -> dict:
         "has_multi_containers": _probe_accuracy(X, labels["has_multiple_containers"][:n]),
         "has_resource_limits": _probe_accuracy(X, labels["has_resource_limits"][:n]),
         "has_readiness_probe": _probe_accuracy(X, labels["has_readiness_probe"][:n]),
-        # New 2 multi-class
+        # New 2 multi-class (kind-filtered)
         "service_type": _probe_accuracy(
             X, labels["service_type_labels"][:n], label_filter=service_mask,
         ),
         "update_strategy": _probe_accuracy(
             X, labels["update_strategy_labels"][:n], label_filter=strategy_mask,
+        ),
+        # NEW: apiVersion + apiVersion-kind multi-class
+        "apiversion": _probe_accuracy(
+            X, labels["apiversion_labels"][:n], label_filter=av_mask,
+        ),
+        "apiversion_kind": _probe_accuracy(
+            X, labels["apiversion_kind_labels"][:n], label_filter=avk_mask,
         ),
         # 2 retrieval
         "triplet": _triplet_accuracy(X, labels["all_kinds"][:n]),
@@ -433,6 +483,10 @@ def main() -> None:
     print(f"Building labels for {len(cached)} docs from linearized nodes...")
     labels = _build_labels(cached, top_k_kinds=args.top_k_kinds)
     print(f"Top kinds: {labels['kind_names']}")
+    print(f"Top apiVersions ({len(labels['apiversion_names'])}): "
+          f"{labels['apiversion_names']}")
+    print(f"Top apiVersion+Kind ({len(labels['apiversion_kind_names'])}): "
+          f"{labels['apiversion_kind_names']}")
     print(
         f"Positive counts: "
         f"containers={int(labels['has_containers'].sum())} | "
@@ -449,7 +503,11 @@ def main() -> None:
         f"service_type={int((labels['service_type_labels'] >= 0).sum())} "
         f"({len(_SERVICE_TYPES)}-class) | "
         f"update_strategy={int((labels['update_strategy_labels'] >= 0).sum())} "
-        f"({len(_UPDATE_STRATEGY_TYPES)}-class)"
+        f"({len(_UPDATE_STRATEGY_TYPES)}-class) | "
+        f"apiVersion={int((labels['apiversion_labels'] >= 0).sum())} "
+        f"({len(labels['apiversion_names'])}-class) | "
+        f"apiVersion+Kind={int((labels['apiversion_kind_labels'] >= 0).sum())} "
+        f"({len(labels['apiversion_kind_names'])}-class)"
     )
 
     # Find all per-epoch dumps
@@ -469,7 +527,7 @@ def main() -> None:
             print(f"ERROR: no dump files found in {args.output_dir}")
             return
 
-    # Header: epoch | 4 original | 5 binary | 2 multi | 2 retrieval
+    # Header: epoch | 4 original | 5 binary | 2 multi | 2 GVK | 2 retrieval
     header_cols = [
         ("ep",     "%4s"),
         ("kind",   "%6s"),
@@ -483,6 +541,8 @@ def main() -> None:
         ("readyP", "%6s"),
         ("svcTy",  "%6s"),
         ("updSt",  "%6s"),
+        ("apiV",   "%6s"),
+        ("apiVK",  "%6s"),
         ("trip",   "%6s"),
         ("knn5",   "%6s"),
     ]
@@ -517,6 +577,8 @@ def main() -> None:
             _fmt_pct(results["has_readiness_probe"]),
             _fmt_pct(results["service_type"]),
             _fmt_pct(results["update_strategy"]),
+            _fmt_pct(results["apiversion"]),
+            _fmt_pct(results["apiversion_kind"]),
             _fmt_pct(results["triplet"]),
             _fmt_pct(results["knn5"]),
         ]
