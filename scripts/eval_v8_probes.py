@@ -26,11 +26,19 @@ from yaml_bert.types import NodeType, YamlNode
 
 
 # Structural positions where 'containers' / 'initContainers' are workload specs.
-_CONTAINERS_PARENT_PATHS = frozenset({"spec", "spec.template.spec"})
+_CONTAINERS_PARENT_PATHS = frozenset({
+    "spec",                                  # Pod
+    "spec.template.spec",                    # Deployment, StatefulSet, DaemonSet, Job
+    "spec.jobTemplate.spec.template.spec",   # CronJob
+})
 
-# Matches spec[.template.spec].(containers|initContainers).<digit(s)>
 _VOLUME_MOUNTS_PATH_RE = re.compile(
-    r"^spec(\.template\.spec)?\.(containers|initContainers)\.\d+$"
+    # Bare Pod: spec.containers.N or spec.initContainers.N
+    r"^spec\.(containers|initContainers)\.\d+$"
+    # Workload template (Deployment, StatefulSet, Job, etc.):
+    r"|^spec\.template\.spec\.(containers|initContainers|ephemeralContainers)\.\d+$"
+    # CronJob:
+    r"|^spec\.jobTemplate\.spec\.template\.spec\.(containers|initContainers|ephemeralContainers)\.\d+$"
 )
 
 
@@ -83,7 +91,7 @@ def _build_labels(cached_docs: list[list[YamlNode]], top_k_kinds: int = 10) -> d
         has_containers, has_init_containers, has_volume_mounts: int (0/1) arrays
     """
     kinds = [_extract_kind(nodes) for nodes in cached_docs]
-    counter = Counter(k for k in kinds if k is not None)
+    counter = Counter(k for k in kinds if k)
     top_kinds = [k for k, _ in counter.most_common(top_k_kinds)]
     kind_to_idx = {k: i for i, k in enumerate(top_kinds)}
     kind_labels = np.array(
@@ -118,7 +126,11 @@ def _probe_accuracy(
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y,
     )
-    clf = LogisticRegression(max_iter=2000)
+    # class_weight='balanced' compensates for skewed positive rates so the
+    # accuracy isn't dominated by the majority class (has_init is ~2.4% positive
+    # — naive 'always predict 0' baseline is 97.6%, so unbalanced 98.6% is
+    # nearly meaningless. Balanced weights give a more honest signal.)
+    clf = LogisticRegression(max_iter=2000, class_weight="balanced")
     clf.fit(X_tr, y_tr)
     return float(clf.score(X_te, y_te))
 
