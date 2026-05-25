@@ -393,27 +393,46 @@ def _knn_purity_at_5(
     X: np.ndarray,
     kinds: np.ndarray,
     k: int = 5,
+    n_queries: int = 5000,
+    chunk_size: int = 500,
+    seed: int = 42,
 ) -> float:
-    """For each doc, find top-k nearest by cosine. Return mean fraction sharing
-    the same kind as the query. Excludes the query from its own neighbours."""
+    """For a random sample of query docs, find top-k nearest by cosine across
+    the full corpus. Return mean fraction sharing the query's kind.
+
+    Sampled + chunked to avoid the O(N^2) pairwise-similarity memory blowup
+    at large N (276K docs would need 285 GB for the full matrix).
+    """
     norms = np.linalg.norm(X, axis=1, keepdims=True)
     norms = np.maximum(norms, 1e-8)
     Xn = X / norms
 
-    # Pairwise cosine: (N, N) — fine for N=5000 (200MB).
-    sims = Xn @ Xn.T
-    np.fill_diagonal(sims, -np.inf)  # exclude self
+    n_docs = Xn.shape[0]
+    # Sample query indices (excluding _unknown kinds for cleaner signal)
+    valid_idx = np.where(kinds != "_unknown")[0]
+    if len(valid_idx) == 0:
+        return float("nan")
+    n_sample = min(n_queries, len(valid_idx))
+    rng = np.random.RandomState(seed)
+    query_idx = rng.choice(valid_idx, size=n_sample, replace=False)
 
-    # Top-k indices per row
-    topk_idx = np.argpartition(-sims, kth=k - 1, axis=1)[:, :k]
+    purities: list[float] = []
+    for start in range(0, n_sample, chunk_size):
+        end = min(start + chunk_size, n_sample)
+        chunk_q_idx = query_idx[start:end]
+        # (chunk, d_model) @ (d_model, N) -> (chunk, N)
+        chunk_sims = Xn[chunk_q_idx] @ Xn.T  # ~500 * 276K * 4B = 553 MB peak
+        # Mask self-similarity by setting diagonal-like entries to -inf
+        for local_i, doc_i in enumerate(chunk_q_idx):
+            chunk_sims[local_i, doc_i] = -np.inf
+        # Top-k indices per row
+        topk_idx = np.argpartition(-chunk_sims, kth=k - 1, axis=1)[:, :k]
+        for local_i, doc_i in enumerate(chunk_q_idx):
+            query_kind = kinds[doc_i]
+            neighbours = topk_idx[local_i]
+            match = sum(1 for j in neighbours if kinds[j] == query_kind)
+            purities.append(match / k)
 
-    purities = []
-    for i, neighbors in enumerate(topk_idx):
-        query_kind = kinds[i]
-        if query_kind == "_unknown":
-            continue
-        match = sum(1 for j in neighbors if kinds[j] == query_kind)
-        purities.append(match / k)
     return float(np.mean(purities)) if purities else float("nan")
 
 
