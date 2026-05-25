@@ -237,6 +237,127 @@ exist for generic K8s.
 - Refactoring suggestions: cluster near-identical Pipelines, suggest
   shared ClusterTask abstractions
 
+## V8 aggregation applications (post-v8 deployment)
+
+The v8 architecture (validated at full 276K corpus) produces two
+representation types that v7 doesn't have:
+
+- **`doc_vec`**: one `d_model`-dim vector per document, summarizing
+  whole-document structure. Empirically encodes kind/apiVersion/GVK at
+  ~100% and within-kind structural features at 95-99%.
+- **`subtree_vecs`**: one vector per KEY position, representing the
+  subtree rooted at that key. Built bottom-up by the aggregator.
+
+These enable applications that v7 cannot do. The ranking below is by
+"best demonstrates v8's aggregation capability" — secondary by build
+effort and user value. To be revisited when planning the next
+Space app or pipeline mini-cycle.
+
+### `doc_vec`-based apps
+
+#### 1. Manifest similarity search (HF Space candidate)
+
+User pastes a YAML. App returns top-5 structurally-similar manifests
+from a pre-computed corpus (e.g., 10K K8s docs with cached `doc_vec`).
+
+- **Showcases**: doc_vec geometry — kind probe at 100% is abstract,
+  "here are 5 Pods that look like yours" is visual proof
+- **Build**: 1-2 days. Pre-compute corpus doc_vecs, numpy + cosine
+  index, paste-YAML → cards UI
+- **User value**: "What does a canonical X look like?", template
+  discovery, learning by example
+- **Production angle**: API endpoint for agent pipelines doing
+  retrieval-augmented K8s reasoning
+
+#### 2. Manifest galaxy (HF Space candidate — cheapest visual)
+
+Pre-computed t-SNE/UMAP of 5-10K manifests projected to 2D, colored
+by kind. Interactive plot.
+
+- **Showcases**: aggregation visually — each cluster proves doc_vec
+  organizes meaningfully. Outliers within a cluster are striking.
+  Cross-kind proximity (Pod-Deployment near each other; ConfigMap far
+  from workloads) reveals what the model considers similar.
+- **Build**: half-day. Pre-compute once, plot with Plotly. Static
+  deploy, no inference at user time.
+- **User value**: Mostly demonstrative. Conversation starter for
+  "what is this model doing?"
+
+#### 3. Manifest anomaly detection
+
+User pastes a YAML. App computes cosine distance to nearest-k
+same-kind manifests in corpus → anomaly score + the nearest neighbors
+so the user sees what "normal" looks like.
+
+- **Showcases**: within-kind variation captured by doc_vec
+- **Build**: 1 day. Same infrastructure as #1 + scoring step
+- **User value**: Security (rogue manifest detection), compliance
+  scanning, drift detection from a baseline corpus
+- **Production angle**: agent pipeline for cluster monitoring —
+  "alert when a new manifest is unusual"
+
+### `subtree_vecs`-based apps (under-explored, most differentiated)
+
+#### 4. Subtree similarity ("find similar container specs")
+
+User pastes a YAML manifest and clicks on a specific subtree (e.g.,
+`spec.containers[0]`). App returns 5 similar subtrees from corpus.
+
+- **Showcases**: every level of the tree has its own meaningful
+  representation, not just the top. UNIQUE to v8 — v7 has no
+  equivalent.
+- **Build**: 2-3 days. UI: YAML viewer with clickable subtrees.
+  Pre-compute subtree_vecs for corpus, store indexed by subtree path.
+- **User value**: "Show me how others configured their resource
+  limits / liveness probes / volume mounts." Very developer-relevant.
+- **Production angle**: code-review assistant for K8s configs
+
+#### 5. Structural diff (tree-aware)
+
+Two YAMLs side-by-side. App aligns their subtrees via subtree_vec
+cosine + highlights structurally similar vs different blocks.
+
+- **Showcases**: tree-aware diff is novel — text-diff misses structural
+  similarity (different ordering = different diff; same structure =
+  same vector)
+- **Build**: 3-5 days. Diff UI is non-trivial.
+- **User value**: Code review for K8s configs, migration tooling,
+  "what changed between these two Deployment versions?"
+
+### Hybrid token + doc_vec apps
+
+#### 6. Smart YAML autocomplete (v8) — replaces current Space app
+
+Same UX as current HF Space missing-field-suggester, but using v8's
+atomic prediction conditioned on `[h_i ; doc_vec ; s_parent]`. App-side
+post-processing reconstructs the compound path from atomic prediction
++ position (since v8 outputs `containers` rather than
+`spec.containers`).
+
+- **Showcases**: atomic prediction with doc_vec conditioning. Subtle —
+  same UX as current, but with v8's likely-better in-context accuracy
+  on edge cases.
+- **Build**: 1 day. Adapt the existing app to load V8Model and add the
+  atomic → compound reconstruction step.
+- **User value**: Same as current app, potentially better. Path to
+  retiring v7 from production.
+- **Acceptance gate**: v8 must match or beat v7 on the capability tests
+  before swapping the Space app over.
+
+### Recommended sequence
+
+1. **Galaxy (#2)** first — half-day, immediately visual, demonstrates
+   aggregation cheaply.
+2. **Similarity search (#1)** second — 1-2 days, concrete user value,
+   directly uses doc_vec geometry.
+3. **v8 autocomplete (#6)** to replace the current v7 app, contingent
+   on capability-test parity.
+4. **Subtree similarity (#4)** later — most differentiated, most useful
+   for real developer workflows.
+
+Each builds on a pre-computed embedding corpus, so the infrastructure
+compounds.
+
 ## Note on scaling
 
 YAML is not language. It's a structured serialization format with
