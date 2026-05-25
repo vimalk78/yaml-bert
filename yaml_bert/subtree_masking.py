@@ -38,10 +38,12 @@ def _get_children(pos: int, children_of: _ChildrenOf) -> Sequence[int]:
 
 def descendants_of(pos: int, children_of: _ChildrenOf) -> set[int]:
     """DFS descendant set of `pos`, including pos itself."""
-    out = {pos}
-    stack = list(_get_children(pos, children_of))
+    out: set[int] = {pos}
+    stack: list[int] = list(_get_children(pos, children_of))
     while stack:
         p = stack.pop()
+        if p in out:
+            continue  # cycle guard
         out.add(p)
         stack.extend(_get_children(p, children_of))
     return out

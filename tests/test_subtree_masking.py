@@ -115,15 +115,11 @@ def test_pick_subtrees_excludes_mlm_overlap():
     assert picks == []  # subtree-at-1 contains 3, which is MLM-masked
 
 
-def test_pick_subtrees_disjoint_picks():
-    """Multiple picks are mutually disjoint."""
-    # Tree:   0 root
-    #         ├── 1 (subtree {1,3,4})
-    #         └── 2 (subtree {2,5,6})
-    # plus filler 7..16 to meet MIN_DOC_NODES and not blow size caps
+def test_pick_subtrees_total_cap_can_force_zero_picks_when_subtrees_too_large():
+    """With N=50 and total cap 5% (=2.5 nodes), neither 3-node subtree fits."""
     rng = random.Random(0)
     picks = pick_subtrees(
-        N=50,  # large so size cap 5%=2.5 nodes won't limit much; total cap is 5%
+        N=50,
         key_positions=[0, 1, 2, 3, 4, 5, 6],
         depth_of={0: 0, 1: 1, 2: 1, 3: 2, 4: 2, 5: 2, 6: 2},
         children_of={0: [1, 2], 1: [3, 4], 2: [5, 6],
@@ -131,11 +127,15 @@ def test_pick_subtrees_disjoint_picks():
         mlm_masked_positions=set(),
         rng=rng,
     )
-    # Subtree at 1 = 3 nodes; at 2 = 3 nodes. Total 6 / 50 = 12% > 5%, so only ONE picks.
-    # But: total cap 5% × 50 = 2.5, so even 3-node subtree exceeds → 0 picks
-    # Let's pick N=100 so 5% = 5, each subtree of 3 fits, both together = 6 > 5 still.
-    # The implementation should pick the FIRST candidate then skip the second.
-    # Re-run with N=200 to give more headroom:
+    # Total cap = 0.05 × 50 = 2.5 nodes. Each candidate subtree is 3 nodes.
+    # Neither fits → no picks.
+    assert picks == []
+
+
+def test_pick_subtrees_disjoint_multi_picks_under_loose_cap():
+    """With N=200 and total cap 5% (=10 nodes), both 3-node subtrees fit
+    and the two picks must be mutually disjoint (positions 1 and 2)."""
+    rng = random.Random(0)
     picks = pick_subtrees(
         N=200,
         key_positions=[0, 1, 2, 3, 4, 5, 6],
@@ -145,9 +145,9 @@ def test_pick_subtrees_disjoint_picks():
         mlm_masked_positions=set(),
         rng=rng,
     )
-    # Total cap 5% × 200 = 10. Both subtrees (3+3=6) fit. Picks should be disjoint.
+    # Total cap = 10. Both 3-node subtrees fit. Picks subset of {1, 2}.
     assert set(picks).issubset({1, 2})
-    # If both picked, they must be {1, 2} — not contain each other.
+    # If both picked, the set must be exactly {1, 2} (no overlap)
     if len(picks) == 2:
         assert set(picks) == {1, 2}
 
@@ -198,3 +198,17 @@ def test_bag_of_keys_target_skips_unknown_keys():
     )
     assert target[10].item() == 1.0
     assert target.sum().item() == 1.0
+
+
+def test_descendants_of_with_list_style_children_of():
+    """descendants_of works with list-of-lists children_of (production format
+    from compute_children_info), not just dict."""
+    # Same tree as test_descendants_of_tree:
+    #   0 ── 1 ── 3
+    #     └─ 2
+    # As list-of-lists indexed by position:
+    children_of_list = [[1, 2], [3], [], []]
+    assert descendants_of(0, children_of_list) == {0, 1, 2, 3}
+    assert descendants_of(1, children_of_list) == {1, 3}
+    assert descendants_of(2, children_of_list) == {2}
+    assert descendants_of(3, children_of_list) == {3}
