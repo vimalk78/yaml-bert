@@ -131,14 +131,11 @@ def print_predictions(
     return passed
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint", type=str)
-    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
-    args = parser.parse_args()
+def run_tests(predict_fn) -> tuple[int, int]:
+    """Run all 9 structural tests using predict_fn(yaml_text, mask_position) -> list[(key, prob)].
 
-    model, vocab = load_model(args.checkpoint, args.vocab)
-    print(f"Model loaded.\n")
+    Returns (passed_tests, total_tests).
+    """
     total_tests: int = 0
     passed_tests: int = 0
 
@@ -162,7 +159,7 @@ spec:
 """
     nodes = YamlLinearizer().linearize(deployment_yaml)
     replicas_pos: int = next(i for i, n in enumerate(nodes) if n.token == "replicas")
-    preds = predict_masked_key(model, vocab, deployment_yaml, mask_position=replicas_pos)
+    preds = predict_fn(deployment_yaml, replicas_pos)
     total_tests += 1
     if print_predictions("Deployment: mask 'replicas' under spec (expected: replicas)", preds, expected="replicas"):
         passed_tests += 1
@@ -181,7 +178,7 @@ spec:
 """
     nodes = YamlLinearizer().linearize(service_yaml)
     type_pos: int = next(i for i, n in enumerate(nodes) if n.token == "type")
-    preds = predict_masked_key(model, vocab, service_yaml, mask_position=type_pos)
+    preds = predict_fn(service_yaml, type_pos)
     total_tests += 1
     if print_predictions("Service: mask 'type' under spec (expected: type)", preds, expected="type"):
         passed_tests += 1
@@ -209,7 +206,7 @@ spec:
     nodes = YamlLinearizer().linearize(wrong_parent_yaml)
     # Find the position of first 'containers'
     containers_pos: int = next(i for i, n in enumerate(nodes) if n.token == "containers")
-    preds = predict_masked_key(model, vocab, wrong_parent_yaml, mask_position=containers_pos)
+    preds = predict_fn(wrong_parent_yaml, containers_pos)
     total_tests += 1
     if print_predictions(
         "Mask 'containers' under metadata (should predict metadata children, not containers)",
@@ -244,7 +241,7 @@ spec:
         image: nginx:1.21
 """
     # Mask 'kind' at depth 0 (position 2)
-    preds = predict_masked_key(model, vocab, depth_yaml, mask_position=2)
+    preds = predict_fn(depth_yaml, 2)
     total_tests += 1
     if print_predictions("Depth 0: mask 'kind' (expected: kind)", preds, expected="kind"):
         passed_tests += 1
@@ -252,7 +249,7 @@ spec:
     # Mask 'image' deep in containers (find its position)
     nodes = YamlLinearizer().linearize(depth_yaml)
     image_pos: int = next(i for i, n in enumerate(nodes) if n.token == "image")
-    preds = predict_masked_key(model, vocab, depth_yaml, mask_position=image_pos)
+    preds = predict_fn(depth_yaml, image_pos)
     total_tests += 1
     if print_predictions(
         f"Depth {nodes[image_pos].depth}: mask 'image' under containers (expected: image)",
@@ -286,7 +283,7 @@ status:
 
     for pos in replicas_positions:
         parent = nodes[pos].parent_path
-        preds = predict_masked_key(model, vocab, spec_status_yaml, mask_position=pos)
+        preds = predict_fn(spec_status_yaml, pos)
         total_tests += 1
         if print_predictions(
             f"Mask 'replicas' under {parent} (expected: replicas)",
@@ -331,8 +328,8 @@ spec:
     valid_pos: int = next(i for i, n in enumerate(nodes_valid) if n.token == "containers")
     nonsense_pos: int = next(i for i, n in enumerate(nodes_nonsense) if n.token == "containers")
 
-    preds_valid = predict_masked_key(model, vocab, valid_yaml, mask_position=valid_pos)
-    preds_nonsense = predict_masked_key(model, vocab, nonsense_yaml, mask_position=nonsense_pos)
+    preds_valid = predict_fn(valid_yaml, valid_pos)
+    preds_nonsense = predict_fn(nonsense_yaml, nonsense_pos)
 
     valid_conf: float = preds_valid[0][1]
     nonsense_conf: float = preds_nonsense[0][1]
@@ -362,7 +359,7 @@ spec:
 """
     # Position 2 is 'spec', but in a normal YAML it would be 'metadata'
     # The model should predict 'metadata' because it knows the structure
-    preds = predict_masked_key(model, vocab, no_metadata_yaml, mask_position=2)
+    preds = predict_fn(no_metadata_yaml, 2)
     total_tests += 1
     if print_predictions(
         "Mask 'spec' at position where metadata should be (expected: metadata)",
@@ -375,6 +372,23 @@ spec:
     print("\n" + "=" * 70)
     print(f"RESULTS: {passed_tests}/{total_tests} tests passed")
     print("=" * 70)
+
+    return passed_tests, total_tests
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("checkpoint", type=str)
+    parser.add_argument("--vocab", type=str, default="output_v1/vocab.json")
+    args = parser.parse_args()
+
+    model, vocab = load_model(args.checkpoint, args.vocab)
+    print(f"Model loaded.\n")
+
+    def predict_fn(yaml_text: str, mask_position: int) -> list[tuple[str, float]]:
+        return predict_masked_key(model, vocab, yaml_text, mask_position)
+
+    run_tests(predict_fn)
 
 
 if __name__ == "__main__":
