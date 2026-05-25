@@ -107,6 +107,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--reconstruction", choices=["on", "off"], default="off")
     parser.add_argument("--recon-weight", type=float, default=0.5)
+    parser.add_argument("--dump-every-n-epochs", type=int, default=1,
+                        help="dump doc_vecs every N epochs (final epoch always "
+                             "dumped). 1=every epoch; 5=every 5 epochs + final.")
     args = parser.parse_args()
 
     recon_enabled = args.reconstruction == "on"
@@ -122,9 +125,11 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     cache_path = os.path.join(args.output_dir, "doc_cache.pkl")
-    print(f"Step 0: Linearize → {cache_path}")
+    # Convention: --max-docs 0 means "use the full corpus" (matches scripts/train.py)
+    max_docs = None if args.max_docs == 0 else args.max_docs
+    print(f"Step 0: Linearize → {cache_path} (max_docs={max_docs or 'all'})")
     cached = build_or_load_cache(DATASET_NAME, cache_path=cache_path,
-                                 max_docs=args.max_docs)
+                                 max_docs=max_docs)
 
     print("Step 1: Build vocab (v8 mode — atomic targets)")
     all_nodes = [n for doc in cached for n in doc]
@@ -145,7 +150,9 @@ def main() -> None:
                             v8_mode=True, recon_enabled=recon_enabled,
                             recon_loss_weight=args.recon_weight)
     full_dataset = V8Dataset(cached, vocab, config)
-    val_size = max(1, len(cached) // 10)
+    # Val size: ~10% capped at 2000 (prevents 30K val passes from dominating
+    # full-corpus runs). At 5K corpus → 500; at 276K corpus → 2000.
+    val_size = max(1, min(2000, len(cached) // 10))
     train_indices = list(range(len(cached) - val_size))
     val_indices = list(range(len(cached) - val_size, len(cached)))
     train_dataset = Subset(full_dataset, train_indices)
@@ -232,12 +239,18 @@ def main() -> None:
         epoch_log.append({"epoch": epoch + 1, "train": avg, "val": val_avg,
                           "dur_sec": epoch_dur, "n_batches": n_batches})
 
-        # Per-epoch doc_vec dump (full 5K corpus, for probe trajectory)
-        dump_path = os.path.join(
-            args.output_dir, f"doc_vecs_epoch_{epoch+1}.pt",
+        # Doc_vec dump: every N epochs (default 1 = every epoch). Final epoch
+        # always dumped regardless of cadence.
+        is_dump_epoch = (
+            (epoch + 1) % args.dump_every_n_epochs == 0
+            or (epoch + 1) == args.epochs
         )
-        _dump_doc_vecs(model, full_dataset, args.batch_size, device,
-                       recon_enabled, dump_path, cached, num_workers)
+        if is_dump_epoch:
+            dump_path = os.path.join(
+                args.output_dir, f"doc_vecs_epoch_{epoch+1}.pt",
+            )
+            _dump_doc_vecs(model, full_dataset, args.batch_size, device,
+                           recon_enabled, dump_path, cached, num_workers)
 
     total_dur = time.time() - train_start
     print(f"Step 5: Save final checkpoint")
