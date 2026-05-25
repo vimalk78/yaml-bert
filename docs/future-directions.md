@@ -337,7 +337,7 @@ post-processing reconstructs the compound path from atomic prediction
 - **Showcases**: atomic prediction with doc_vec conditioning. Subtle —
   same UX as current, but with v8's likely-better in-context accuracy
   on edge cases.
-- **Build**: 1 day. Adapt the existing app to load V8Model and add the
+- **Build**: 1 day. Adapt the existing app to load YamlBertModel and add the
   atomic → compound reconstruction step.
 - **User value**: Same as current app, potentially better. Path to
   retiring v7 from production.

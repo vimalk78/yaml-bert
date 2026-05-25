@@ -6,10 +6,8 @@ from yaml_bert.types import NodeType, YamlNode
 
 SPECIAL_TOKENS = ["[PAD]", "[UNK]", "[MASK]"]
 
-UNIVERSAL_ROOT_KEYS: set[str] = {"apiVersion", "kind", "metadata"}
-
 # Canonical casing for known Kubernetes kinds.
-# Maps lowercase → canonical form.
+# Maps lowercase → canonical form. Populated by VocabBuilder.build().
 _KIND_CANONICAL: dict[str, str] = {}
 
 
@@ -22,47 +20,17 @@ def normalize_kind(kind: str) -> str:
     return _KIND_CANONICAL.get(kind.lower(), kind)
 
 
-def _is_status_trigram(target: str) -> bool:
-    """True if a kind_specific trigram has `status` as its parent (e.g.
-    `Deployment::status::replicas`). Such trigrams are exempted from
-    min_freq filtering — see Vocabulary.build."""
-    parts = target.split("::", 2)
-    return len(parts) >= 2 and parts[1] == "status"
-
-
-def compute_target(node: YamlNode, kind: str) -> tuple[str, str]:
-    """Compute hybrid prediction target.
-
-    Returns (target_string, head_type) where head_type is "simple" or "kind_specific".
-    """
-    if node.depth == 0:
-        return node.token, "simple"
-
-    parent_key: str = Vocabulary.extract_parent_key(node.parent_path)
-
-    if node.depth == 1 and parent_key not in UNIVERSAL_ROOT_KEYS and parent_key != "":
-        return f"{kind}::{parent_key}::{node.token}", "kind_specific"
-
-    return (f"{parent_key}::{node.token}" if parent_key else node.token), "simple"
-
-
 class Vocabulary:
     def __init__(
         self,
         key_vocab: dict[str, int],
         value_vocab: dict[str, int],
         special_tokens: dict[str, int],
-        kind_vocab: dict[str, int] | None = None,
-        simple_target_vocab: dict[str, int] | None = None,
-        kind_target_vocab: dict[str, int] | None = None,
         atomic_target_vocab: dict[str, int] | None = None,
     ) -> None:
         self.key_vocab = key_vocab
         self.value_vocab = value_vocab
         self.special_tokens = special_tokens
-        self.kind_vocab = kind_vocab or {"[NO_KIND]": 0}
-        self.simple_target_vocab = simple_target_vocab or {}
-        self.kind_target_vocab = kind_target_vocab or {}
         self.atomic_target_vocab = atomic_target_vocab or {}
         self._id_to_key = {v: k for k, v in key_vocab.items()}
         self._id_to_value = {v: k for k, v in value_vocab.items()}
@@ -74,11 +42,6 @@ class Vocabulary:
     def encode_value(self, token: str) -> int:
         return self.value_vocab.get(token, self.special_tokens["[UNK]"])
 
-    def encode_kind(self, kind: str) -> int:
-        if not kind:
-            return self.kind_vocab["[NO_KIND]"]
-        return self.kind_vocab.get(kind, self.kind_vocab["[NO_KIND]"])
-
     def decode_key(self, id: int) -> str:
         if id in self._id_to_special:
             return self._id_to_special[id]
@@ -89,37 +52,14 @@ class Vocabulary:
             return self._id_to_special[id]
         return self._id_to_value.get(id, "[UNK]")
 
-    def encode_simple_target(self, target: str) -> int:
-        return self.simple_target_vocab.get(target, self.special_tokens["[UNK]"])
-
-    def encode_kind_target(self, target: str) -> int:
-        return self.kind_target_vocab.get(target, self.special_tokens["[UNK]"])
-
     def encode_atomic_target(self, target: str) -> int:
         """Encode a single key token as its atomic target id.
 
         Returns the [UNK] id if `target` is not in the atomic target vocab.
-        Used by the v8 model head, which predicts single keys (no parent::child
-        compounds) drawn from the same token universe as `key_vocab`.
+        The Token Head predicts single keys drawn from the same token universe
+        as `key_vocab`.
         """
         return self.atomic_target_vocab.get(target, self.special_tokens["[UNK]"])
-
-    @staticmethod
-    def extract_parent_key(parent_path: str) -> str:
-        """Extract the last non-numeric component from a parent_path.
-
-        Examples:
-            "spec.template.spec.containers.0" -> "containers"
-            "metadata" -> "metadata"
-            "" -> ""
-        """
-        if not parent_path:
-            return ""
-        parts = parent_path.split(".")
-        for part in reversed(parts):
-            if not part.isdigit():
-                return part
-        return ""
 
     @property
     def key_vocab_size(self) -> int:
@@ -130,18 +70,6 @@ class Vocabulary:
         return len(self.value_vocab) + len(self.special_tokens)
 
     @property
-    def kind_vocab_size(self) -> int:
-        return len(self.kind_vocab)
-
-    @property
-    def simple_target_vocab_size(self) -> int:
-        return len(self.simple_target_vocab) + len(self.special_tokens)
-
-    @property
-    def kind_target_vocab_size(self) -> int:
-        return len(self.kind_target_vocab) + len(self.special_tokens)
-
-    @property
     def atomic_target_vocab_size(self) -> int:
         return len(self.atomic_target_vocab) + len(self.special_tokens)
 
@@ -150,9 +78,6 @@ class Vocabulary:
             "key_vocab": self.key_vocab,
             "value_vocab": self.value_vocab,
             "special_tokens": self.special_tokens,
-            "kind_vocab": self.kind_vocab,
-            "simple_target_vocab": self.simple_target_vocab,
-            "kind_target_vocab": self.kind_target_vocab,
             "atomic_target_vocab": self.atomic_target_vocab,
         }
         with open(path, "w") as f:
@@ -166,9 +91,6 @@ class Vocabulary:
             key_vocab=data["key_vocab"],
             value_vocab=data["value_vocab"],
             special_tokens=data["special_tokens"],
-            kind_vocab=data.get("kind_vocab"),
-            simple_target_vocab=data.get("simple_target_vocab", {}),
-            kind_target_vocab=data.get("kind_target_vocab", {}),
             atomic_target_vocab=data.get("atomic_target_vocab", {}),
         )
 
@@ -181,37 +103,21 @@ class VocabBuilder:
         *,
         key_min_freq: int | None = None,
         value_min_freq: int | None = None,
-        simple_target_min_freq: int | None = None,
-        kind_target_min_freq: int | None = None,
     ) -> Vocabulary:
         """Build vocab with optional per-category min_freq thresholds.
 
         Per-category thresholds default to the global `min_freq` for backward
-        compatibility. Output-target categories (simple_target, kind_target)
-        are naturally rarer per-target than input categories (key, value)
-        because they encode (parent, child) or (kind, parent, child) tuples,
-        so the same threshold treats them unfairly. Lower thresholds for
-        target categories are recommended.
-
-        See commit 347db09 (where the original target min_freq was added as
-        a fix for 72K+ vocab OOM) and the analysis in
-        scripts/count_status_trigrams.py.
+        compatibility.
         """
         key_min_freq = key_min_freq if key_min_freq is not None else min_freq
         value_min_freq = value_min_freq if value_min_freq is not None else min_freq
-        simple_target_min_freq = (
-            simple_target_min_freq if simple_target_min_freq is not None else min_freq
-        )
-        kind_target_min_freq = (
-            kind_target_min_freq if kind_target_min_freq is not None else min_freq
-        )
         key_counts: dict[str, int] = {}
         value_counts: dict[str, int] = {}
         kind_set: set[str] = set()
-        simple_target_counts: dict[str, int] = {}
-        kind_target_counts: dict[str, int] = {}
 
-        # First pass: collect all kind values to build canonical casing map
+        # First pass: collect all kind values to build canonical casing map.
+        # The casing map (_KIND_CANONICAL) is needed by normalize_kind() which
+        # is used downstream by _extract_kind in the types module.
         raw_kinds: dict[str, dict[str, int]] = {}  # lowercase → {variant: count}
         prev_was_kind_key = False
         for node in nodes:
@@ -231,47 +137,25 @@ class VocabBuilder:
             _KIND_CANONICAL[lower] = canonical
 
         # Second pass: count tokens with normalized kinds
-        current_kind: str = ""
         prev_was_kind_key = False
         for node in nodes:
             if node.node_type in (NodeType.KEY, NodeType.LIST_KEY):
                 key_counts[node.token] = key_counts.get(node.token, 0) + 1
                 prev_was_kind_key = (node.token == "kind" and node.depth == 0)
-                target, head_type = compute_target(node, current_kind)
-                if head_type == "kind_specific":
-                    kind_target_counts[target] = kind_target_counts.get(target, 0) + 1
-                else:
-                    simple_target_counts[target] = simple_target_counts.get(target, 0) + 1
             elif node.node_type in (NodeType.VALUE, NodeType.LIST_VALUE):
                 value_counts[node.token] = value_counts.get(node.token, 0) + 1
                 if prev_was_kind_key:
-                    normalized = normalize_kind(node.token)
-                    kind_set.add(normalized)
-                    current_kind = normalized
+                    kind_set.add(normalize_kind(node.token))
                 prev_was_kind_key = False
 
-        # Filter target vocabs by their per-category min_freq.
-        # Exception: kind_specific trigrams under `status` are exempted because
-        # the training corpus (user-written GitHub YAMLs) is heavily biased
-        # against status — only 0.8% of trigram occurrences are status-side,
-        # so most status trigrams are 1-occurrence even though they're real
-        # K8s fields. See scripts/count_status_trigrams.py for the analysis.
-        simple_target_set: set[str] = {
-            t for t, c in simple_target_counts.items() if c >= simple_target_min_freq
-        }
-        kind_target_set: set[str] = {
-            t for t, c in kind_target_counts.items()
-            if c >= kind_target_min_freq or _is_status_trigram(t)
-        }
-        # v8 atomic target vocab: single key tokens (no parent::child compounds).
-        # Uses the same filter threshold as keys since the entries ARE keys.
+        # Atomic target vocab: single key tokens. Uses the same filter
+        # threshold as keys since the entries ARE keys.
         atomic_target_set: set[str] = {
             t for t, c in key_counts.items() if c >= key_min_freq
         }
 
         return self.build_from_counts(
             key_counts, value_counts, key_min_freq, kind_set,
-            simple_target_set, kind_target_set,
             value_min_freq=value_min_freq,
             atomic_target_set=atomic_target_set,
         )
@@ -282,8 +166,6 @@ class VocabBuilder:
         value_counts: dict[str, int],
         min_freq: int = 1,
         kind_set: set[str] | None = None,
-        simple_target_set: set[str] | None = None,
-        kind_target_set: set[str] | None = None,
         *,
         value_min_freq: int | None = None,
         atomic_target_set: set[str] | None = None,
@@ -298,8 +180,8 @@ class VocabBuilder:
         # Derive atomic_target_set from key_counts when not supplied. The atomic
         # set IS-A subset of keys by definition, so this is self-consistent and
         # prevents callers (e.g. build_from_huggingface) from silently producing
-        # an empty atomic_target_vocab — which would break v8 training (output
-        # head would collapse to ~3 classes and every target would map to [UNK]).
+        # an empty atomic_target_vocab — which would break training (output head
+        # would collapse to ~3 classes and every target would map to [UNK]).
         if atomic_target_set is None:
             atomic_target_set = {t for t, c in key_counts.items() if c >= min_freq}
         special_tokens = {tok: i for i, tok in enumerate(SPECIAL_TOKENS)}
@@ -321,28 +203,15 @@ class VocabBuilder:
             for i, token in enumerate(sorted(value_tokens))
         }
 
-        kind_vocab: dict[str, int] = {"[NO_KIND]": 0}
-        for i, kind in enumerate(sorted(kind_set or [])):
-            kind_vocab[kind] = i + 1
-
-        simple_target_vocab = {
-            target: i + offset
-            for i, target in enumerate(sorted(simple_target_set or []))
-        }
-
-        kind_target_vocab = {
-            target: i + offset
-            for i, target in enumerate(sorted(kind_target_set or []))
-        }
-
         atomic_target_vocab = {
             target: i + offset
             for i, target in enumerate(sorted(atomic_target_set or []))
         }
 
-        return Vocabulary(key_vocab, value_vocab, special_tokens, kind_vocab,
-                          simple_target_vocab, kind_target_vocab,
-                          atomic_target_vocab)
+        return Vocabulary(
+            key_vocab, value_vocab, special_tokens,
+            atomic_target_vocab=atomic_target_vocab,
+        )
 
     @staticmethod
     def save_counts(

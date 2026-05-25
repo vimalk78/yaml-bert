@@ -1,22 +1,22 @@
-"""Integration test: V8Dataset emits subtree-masking outputs; v8_collate_fn batches them."""
+"""Integration test: YamlBertDataset emits subtree-masking outputs; collate_fn batches them."""
 import torch
 
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.vocab import VocabBuilder
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+from yaml_bert.dataset import YamlBertDataset, collate_fn
 
 
 def _build_dataset_and_vocab(yamls: list[str], recon_enabled: bool):
     docs = [YamlLinearizer().linearize(y) for y in yamls]
     flat = [n for d in docs for n in d]
     vocab = VocabBuilder().build(flat, min_freq=1)
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.0,
+    config = YamlBertConfig(mask_prob=0.0,
                             recon_enabled=recon_enabled)
-    return V8Dataset(docs, vocab, config), vocab
+    return YamlBertDataset(docs, vocab, config), vocab
 
 
-def test_v8_dataset_item_includes_subtree_fields_when_recon_enabled():
+def test_dataset_item_includes_subtree_fields_when_recon_enabled():
     """When recon_enabled=True, items carry subtree_mask + subtree_roots
     + bag_of_keys_targets."""
     yamls = [
@@ -45,7 +45,7 @@ def test_v8_dataset_item_includes_subtree_fields_when_recon_enabled():
             assert target.dim() == 1
 
 
-def test_v8_dataset_item_omits_subtree_fields_when_recon_disabled():
+def test_dataset_item_omits_subtree_fields_when_recon_disabled():
     """When recon_enabled=False, no subtree-related fields appear in item."""
     yamls = ["apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"]
     ds, _ = _build_dataset_and_vocab(yamls, recon_enabled=False)
@@ -55,8 +55,8 @@ def test_v8_dataset_item_omits_subtree_fields_when_recon_disabled():
     assert "bag_of_keys_targets" not in item
 
 
-def test_v8_collate_batches_subtree_fields_when_present():
-    """v8_collate_fn batches per-item subtree fields into (B,N) + flat (M,*).
+def test_collate_batches_subtree_fields_when_present():
+    """collate_fn batches per-item subtree fields into (B,N) + flat (M,*).
 
     Structural assertions hold regardless of whether any subtrees were picked
     (pick_subtrees returns [] when no candidates pass the size cap).
@@ -68,7 +68,7 @@ def test_v8_collate_batches_subtree_fields_when_present():
         "spec:\n  containers:\n  - name: y\n    image: nginx\n",
     ]
     ds, vocab = _build_dataset_and_vocab(yamls, recon_enabled=True)
-    batch = v8_collate_fn([ds[0], ds[1]])
+    batch = collate_fn([ds[0], ds[1]])
 
     assert "subtree_mask" in batch
     assert batch["subtree_mask"].dim() == 2  # (B, N)
@@ -89,12 +89,12 @@ def test_v8_collate_batches_subtree_fields_when_present():
     assert bot.shape[1] == vocab.atomic_target_vocab_size
 
 
-def test_v8_collate_omits_subtree_fields_when_absent():
+def test_collate_omits_subtree_fields_when_absent():
     """If items don't carry subtree fields, neither does the batched dict."""
     yamls = ["apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n",
              "apiVersion: v1\nkind: Service\n"]
     ds, _ = _build_dataset_and_vocab(yamls, recon_enabled=False)
-    batch = v8_collate_fn([ds[0], ds[1]])
+    batch = collate_fn([ds[0], ds[1]])
     assert "subtree_mask" not in batch
     assert "subtree_roots_flat" not in batch
     assert "bag_of_keys_targets_flat" not in batch

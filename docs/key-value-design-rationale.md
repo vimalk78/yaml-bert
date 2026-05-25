@@ -36,15 +36,15 @@ VALUEs are second-class:
 Concrete code references:
 
 ```python
-# yaml_bert/v8_dataset.py — MLM masking
+# yaml_bert/dataset.py — MLM masking
 _MASKABLE_TYPES = (NodeType.KEY, NodeType.LIST_KEY)
 # VALUE positions never reach the masking branch.
 
 # yaml_bert/aggregator.py — _forward_vectorized
-# Aggregates only over edges between KEY positions (built in v8_collate_fn).
+# Aggregates only over edges between KEY positions (built in collate_fn).
 # VALUE positions exist in hidden_states but are not summed into subtree_vecs.
 
-# yaml_bert/v8_model.py — Token Head
+# yaml_bert/model.py — Token Head
 # atomic_logits = self.token_head([h_i ; doc_vec ; s_parent])
 # Trained against atomic_labels, which are -100 (ignored) for VALUE positions.
 ```
@@ -201,9 +201,9 @@ semantics that self-attention can't provide.
 
 ## References
 
-- `yaml_bert/v8_dataset.py` — `_MASKABLE_TYPES`, V8Dataset.__getitem__
+- `yaml_bert/dataset.py` — `_MASKABLE_TYPES`, YamlBertDataset.__getitem__
 - `yaml_bert/aggregator.py` — `_forward_vectorized`, `_forward_reference`
-- `yaml_bert/v8_model.py` — V8Model.forward
+- `yaml_bert/model.py` — YamlBertModel.forward
 - `yaml_bert/embedding.py` — separate key_embedding + value_embedding
   tables
 - `docs/architecture.md` — broader architecture overview

@@ -2,7 +2,7 @@ import torch
 
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import V8Dataset, compute_children_info, v8_collate_fn
+from yaml_bert.dataset import YamlBertDataset, compute_children_info, collate_fn
 
 
 def test_compute_children_info_simple():
@@ -145,8 +145,8 @@ def test_compute_children_info_empty_input():
     assert info["full_path_of"] == []
 
 
-def test_v8_dataset_item_keys():
-    """V8Dataset item contains the required keys."""
+def test_dataset_item_keys():
+    """YamlBertDataset item contains the required keys."""
     nodes_list = [
         YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n")
         for _ in range(2)
@@ -154,8 +154,8 @@ def test_v8_dataset_item_keys():
     vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
         [n for doc in nodes_list for n in doc], min_freq=1,
     )
-    config = YamlBertConfig(v8_mode=True, mask_prob=1.0)  # mask all maskable for deterministic test
-    ds = V8Dataset(documents=nodes_list, vocab=vocab, config=config)
+    config = YamlBertConfig(mask_prob=1.0)  # mask all maskable for deterministic test
+    ds = YamlBertDataset(documents=nodes_list, vocab=vocab, config=config)
 
     item = ds[0]
     assert "token_ids" in item
@@ -166,7 +166,7 @@ def test_v8_dataset_item_keys():
     assert "children_info" in item  # dict, not tensor — collate handles
 
 
-def test_v8_collate_preserves_children_info():
+def test_collate_preserves_children_info():
     """Collate returns batch with batched tensors and a list of children_info."""
     nodes_list = [
         YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\n"),
@@ -175,30 +175,30 @@ def test_v8_collate_preserves_children_info():
     vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
         [n for doc in nodes_list for n in doc], min_freq=1,
     )
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.5)
-    ds = V8Dataset(documents=nodes_list, vocab=vocab, config=config)
-    batch = v8_collate_fn([ds[0], ds[1]])
+    config = YamlBertConfig(mask_prob=0.5)
+    ds = YamlBertDataset(documents=nodes_list, vocab=vocab, config=config)
+    batch = collate_fn([ds[0], ds[1]])
     assert batch["token_ids"].dim() == 2  # (B, N)
     assert isinstance(batch["batch_info"], list)
     assert len(batch["batch_info"]) == 2
     assert "children_of" in batch["batch_info"][0]
 
 
-def test_v8_collate_includes_aggregator_precompute():
-    """v8_collate_fn precomputes tensors needed by the vectorized aggregator."""
+def test_collate_includes_aggregator_precompute():
+    """collate_fn precomputes tensors needed by the vectorized aggregator."""
     from yaml_bert.linearizer import YamlLinearizer
     from yaml_bert.config import YamlBertConfig
     from yaml_bert.vocab import VocabBuilder
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
 
     docs = [
         YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"),
         YamlLinearizer().linearize("apiVersion: v1\nkind: Service\n"),
     ]
     vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.0)
-    ds = V8Dataset(documents=docs, vocab=vocab, config=config)
-    batch = v8_collate_fn([ds[0], ds[1]])
+    config = YamlBertConfig(mask_prob=0.0)
+    ds = YamlBertDataset(documents=docs, vocab=vocab, config=config)
+    batch = collate_fn([ds[0], ds[1]])
 
     # parent_of_tensor: (B, N) long, -1 sentinel for no-parent or padding
     assert "parent_of_tensor" in batch

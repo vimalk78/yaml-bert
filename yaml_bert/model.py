@@ -1,4 +1,4 @@
-"""v8 Phase 0 model: encoder + tree aggregator + atomic Token Head.
+"""YAML-BERT model: encoder + tree aggregator + atomic Token Head.
 
 The Token Head predicts atomic key targets (vocab ~1000) instead of compound
 trigrams. It conditions on a concatenation of:
@@ -20,10 +20,11 @@ from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.reconstruction_head import ReconstructionHead
 
 
-class V8Model(nn.Module):
-    """v8 Phase 0: encoder + aggregator + atomic Token Head.
+class YamlBertModel(nn.Module):
+    """YAML-BERT encoder + aggregator + atomic Token Head.
 
-    No reconstruction head, no compound output heads.
+    Predicts atomic key targets conditioned on doc_vec + parent subtree vec.
+    Optionally trains a reconstruction head when recon_enabled=True.
     """
 
     def __init__(
@@ -66,7 +67,7 @@ class V8Model(nn.Module):
             if self.embedding.depth_embedding is None or \
                self.embedding.sibling_embedding is None:
                 raise ValueError(
-                    "V8Model: recon_enabled=True requires tree_pos_variant=FULL "
+                    "YamlBertModel: recon_enabled=True requires tree_pos_variant=FULL "
                     f"(got variant where depth_embedding="
                     f"{self.embedding.depth_embedding} and sibling_embedding="
                     f"{self.embedding.sibling_embedding}). The reconstruction "

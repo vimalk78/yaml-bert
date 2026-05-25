@@ -1,12 +1,9 @@
-"""V8 missing-field suggester using V8Model (atomic-vocab prediction head).
+"""YAML-BERT missing-field suggester using atomic-vocab prediction head.
 
-API is identical to yaml_bert/suggest.py's suggest_missing_fields, but uses
-V8Model + atomic vocabulary instead of YamlBertModel + compound vocabulary.
-
-Key differences from v7:
+Key design:
 - Single atomic head (no kind_head / simple_head routing)
 - Decoding uses vocab.atomic_target_vocab reverse map
-- Building the input batch via V8Dataset + v8_collate_fn (precomputes tree tensors)
+- Building the input batch via YamlBertDataset + collate_fn (precomputes tree tensors)
 - No path stripping: output IS the atomic key (e.g., "image", not "containers::image")
 """
 from __future__ import annotations
@@ -23,8 +20,8 @@ from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.types import NodeType, YamlNode, _extract_kind  # noqa: F401
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
-from yaml_bert.v8_model import V8Model
+from yaml_bert.dataset import YamlBertDataset, collate_fn
+from yaml_bert.model import YamlBertModel
 from yaml_bert.vocab import Vocabulary
 
 # Keys managed by the cluster, not written by users
@@ -91,18 +88,18 @@ _NODE_TYPE_INDEX: dict[NodeType, int] = {
 }
 
 
-def suggest_missing_fields_v8(
-    model: V8Model,
+def suggest_missing_fields(
+    model: YamlBertModel,
     vocab: Vocabulary,
     yaml_text: str,
     threshold: float = 0.3,
     top_k: int = 10,
     verbose: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Suggest missing fields using V8Model (atomic-vocab head).
+    """Suggest missing fields using YamlBertModel (atomic-vocab head).
 
     Args:
-        model: Trained V8Model
+        model: Trained YamlBertModel
         vocab: Vocabulary with atomic_target_vocab populated
         yaml_text: Raw YAML text
         threshold: Minimum confidence to report a missing field
@@ -190,7 +187,7 @@ def suggest_missing_fields_v8(
 
     # Dataset config: mask_prob=0.0 so dataset doesn't randomly mask.
     # recon_enabled=False — we don't need subtree tensors at inference.
-    infer_config = YamlBertConfig(v8_mode=True, mask_prob=0.0, recon_enabled=False)
+    infer_config = YamlBertConfig(mask_prob=0.0, recon_enabled=False)
 
     for spec in probe_specs:
         predicted, candidates_log = _run_probe_v8(
@@ -263,7 +260,7 @@ def suggest_missing_fields_v8(
 
 def _run_probe_v8(
     *,
-    model: V8Model,
+    model: YamlBertModel,
     vocab: Vocabulary,
     nodes: list[YamlNode],
     spec: dict[str, Any],
@@ -275,7 +272,7 @@ def _run_probe_v8(
     top_k: int,
     verbose: bool,
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
-    """Run one probe: splice a fake [MASK] node, forward through V8Model, decode top-k.
+    """Run one probe: splice a fake [MASK] node, forward through YamlBertModel, decode top-k.
 
     Returns:
         predicted: {key_name: prob} that passed all filters
@@ -300,15 +297,15 @@ def _run_probe_v8(
     # Splice fake node into the node list
     fake_nodes: list[YamlNode] = nodes[:insert_pos] + [fake_node] + nodes[insert_pos:]
 
-    # Build dataset item: V8Dataset encodes all nodes and computes children_info
-    ds = V8Dataset([fake_nodes], vocab, infer_config)
+    # Build dataset item: YamlBertDataset encodes all nodes and computes children_info
+    ds = YamlBertDataset([fake_nodes], vocab, infer_config)
     item = ds[0]
 
     # Apply [MASK] at insert_pos (dataset has mask_prob=0.0, so token is intact)
     item["token_ids"] = item["token_ids"].clone()
     item["token_ids"][insert_pos] = mask_id
 
-    batch = v8_collate_fn([item])
+    batch = collate_fn([item])
 
     with torch.no_grad():
         out = model(
@@ -324,7 +321,7 @@ def _run_probe_v8(
             parents_by_depth=batch["parents_by_depth"],
         )
 
-    # V8Model returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
+    # YamlBertModel returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
     logits = out[0]  # (1, N, V_atomic)
     probs = F.softmax(logits[0, insert_pos], dim=-1)
     topk = probs.topk(top_k + 5)

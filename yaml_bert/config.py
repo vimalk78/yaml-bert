@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -25,13 +25,6 @@ class YamlBertConfig:
     max_depth: int = 16
     max_sibling: int = 32
     tree_pos_variant: TreePosVariant = TreePosVariant.FULL
-    # tree-bias attention: per-(distance, head) bias added to attention logits.
-    # DISABLED by default in v7 because PyTorch's nn.TransformerEncoder takes a
-    # slow path whenever attn_mask is non-None (~15× slowdown observed). The
-    # module + integration are kept for future use once a custom encoder layer
-    # using F.scaled_dot_product_attention (which supports fast-path attn_mask)
-    # is built. Enable manually if you've made that change.
-    tree_bias_enabled: bool = False
 
     # Training
     mask_prob: float = 0.15
@@ -39,14 +32,8 @@ class YamlBertConfig:
     batch_size: int = 32
     num_epochs: int = 30
     max_seq_len: int = 512
-    skip_unk_targets: bool = True  # v6: don't supervise on positions whose target is [UNK]
 
-    # Auxiliary loss weights
-    aux_kind_weight: float = 0.1     # α: kind classification loss weight
-    aux_parent_weight: float = 0.1   # β: parent_key classification loss weight
-
-    # v8 prototype
-    v8_mode: bool = False  # Phase 0 prototype: aggregator + atomic head
+    # Reconstruction objective (subtree masking + bag-of-keys prediction)
     recon_enabled: bool = False
     recon_loss_weight: float = 0.5
 

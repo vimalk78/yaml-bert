@@ -7,8 +7,7 @@ from yaml_bert.vocab import Vocabulary, VocabBuilder
 from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.model import YamlBertModel
-from yaml_bert.dataset import YamlDataset, collate_fn
-from yaml_bert.trainer import YamlBertTrainer
+from yaml_bert.dataset import YamlBertDataset, collate_fn
 
 __all__ = [
     "YamlBertConfig",
@@ -20,7 +19,6 @@ __all__ = [
     "DomainAnnotator",
     "YamlBertEmbedding",
     "YamlBertModel",
-    "YamlDataset",
+    "YamlBertDataset",
     "collate_fn",
-    "YamlBertTrainer",
 ]

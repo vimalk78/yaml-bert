@@ -3,7 +3,7 @@ import torch
 
 from yaml_bert.aggregator import TreeAggregator
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+from yaml_bert.dataset import YamlBertDataset, collate_fn
 from yaml_bert.vocab import VocabBuilder
 from yaml_bert.config import YamlBertConfig
 
@@ -20,9 +20,9 @@ def test_vectorized_aggregator_equals_per_doc_reference():
             "  selector:\n    matchLabels:\n      app: y\n"),
     ]
     vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.0, d_model=16)
-    ds = V8Dataset(docs, vocab, config)
-    batch = v8_collate_fn([ds[0], ds[1]])
+    config = YamlBertConfig(mask_prob=0.0, d_model=16)
+    ds = YamlBertDataset(docs, vocab, config)
+    batch = collate_fn([ds[0], ds[1]])
 
     B, N = batch["token_ids"].shape
     d_model = 16
@@ -70,7 +70,7 @@ def test_vectorized_aggregator_with_subtree_mask_equals_reference():
     """Vectorized path with subtree_mask matches reference path with same mask."""
     from yaml_bert.aggregator import TreeAggregator
     from yaml_bert.linearizer import YamlLinearizer
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
     from yaml_bert.vocab import VocabBuilder
     from yaml_bert.config import YamlBertConfig
 
@@ -84,10 +84,10 @@ def test_vectorized_aggregator_with_subtree_mask_equals_reference():
             "spec:\n  containers:\n  - name: z\n"),
     ]
     vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.0, d_model=16,
+    config = YamlBertConfig(mask_prob=0.0, d_model=16,
                             recon_enabled=True)
-    ds = V8Dataset(docs, vocab, config)
-    batch = v8_collate_fn([ds[0], ds[1]])
+    ds = YamlBertDataset(docs, vocab, config)
+    batch = collate_fn([ds[0], ds[1]])
     # Synthesize a subtree_mask manually so the test doesn't depend on
     # random picker state. Mask all depth>=2 positions in doc 0.
     sm = batch["subtree_mask"].clone()
@@ -126,7 +126,7 @@ def test_aggregator_subtree_mask_excludes_positions_from_doc_vec():
     """A subtree_mask covering a top-level key removes it from doc_vec mean."""
     from yaml_bert.aggregator import TreeAggregator
     from yaml_bert.linearizer import YamlLinearizer
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
     from yaml_bert.vocab import VocabBuilder
     from yaml_bert.config import YamlBertConfig
 
@@ -135,10 +135,10 @@ def test_aggregator_subtree_mask_excludes_positions_from_doc_vec():
             "apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n  y: 2\n"),
     ]
     vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.0, d_model=8,
+    config = YamlBertConfig(mask_prob=0.0, d_model=8,
                             recon_enabled=True)
-    ds = V8Dataset(docs, vocab, config)
-    batch = v8_collate_fn([ds[0]])
+    ds = YamlBertDataset(docs, vocab, config)
+    batch = collate_fn([ds[0]])
 
     # Find the position of "spec" (depth-0 KEY)
     info = batch["batch_info"][0]

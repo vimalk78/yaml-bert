@@ -36,8 +36,8 @@ _log(f"gradio {gr.__version__} imported")
 _log("Importing yaml_bert package...")
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
-from yaml_bert.v8_model import V8Model
-from yaml_bert.suggest_v8 import suggest_missing_fields_v8 as suggest_missing_fields
+from yaml_bert.model import YamlBertModel
+from yaml_bert.suggest import suggest_missing_fields
 from yaml_bert.vocab import Vocabulary
 _log("yaml_bert imported")
 
@@ -48,7 +48,7 @@ DEFAULT_CHECKPOINT = "model/yaml_bert.pt"
 DEFAULT_VOCAB = "model/vocab.json"
 
 
-def load_model(checkpoint_path: str, vocab_path: str) -> tuple[V8Model, Vocabulary]:
+def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vocabulary]:
     _log(f"Loading vocab from {vocab_path}")
     vocab = Vocabulary.load(vocab_path)
     _log(f"Vocab loaded: {vocab.key_vocab_size} keys, "
@@ -58,17 +58,17 @@ def load_model(checkpoint_path: str, vocab_path: str) -> tuple[V8Model, Vocabula
     _log(f"Reading checkpoint file {checkpoint_path}")
     cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
-    _log("Building V8Model architecture")
+    _log("Building YamlBertModel architecture")
     # recon_enabled=True is required to load checkpoints from MLM+recon training
     # (state_dict includes recon_head weights). The recon head exists but is
     # never invoked at inference time (no subtree_roots_flat passed in forward).
-    config = YamlBertConfig(v8_mode=True, recon_enabled=True)
+    config = YamlBertConfig(recon_enabled=True)
     emb = YamlBertEmbedding(
         config=config,
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
     )
-    model = V8Model(
+    model = YamlBertModel(
         config=config,
         embedding=emb,
         atomic_vocab_size=vocab.atomic_target_vocab_size,

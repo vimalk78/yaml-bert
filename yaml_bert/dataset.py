@@ -1,4 +1,4 @@
-"""v8 dataset extensions: children-info precompute for tree aggregator."""
+"""YAML-BERT dataset: children-info precompute for tree aggregator."""
 from __future__ import annotations
 
 import random
@@ -103,8 +103,8 @@ _NODE_TYPE_INDEX = {
 _MASKABLE_TYPES = (NodeType.KEY, NodeType.LIST_KEY)
 
 
-class V8Dataset(Dataset):
-    """v8 dataset: atomic labels at masked positions + children info per doc."""
+class YamlBertDataset(Dataset):
+    """YAML-BERT dataset: atomic labels at masked positions + children info per doc."""
 
     def __init__(
         self,
@@ -125,7 +125,7 @@ class V8Dataset(Dataset):
         if self.recon_enabled and len(documents) > 100:
             import logging
             logging.getLogger(__name__).info(
-                "V8Dataset: precomputing descendants for %d docs (recon enabled)",
+                "YamlBertDataset: precomputing descendants for %d docs (recon enabled)",
                 len(documents),
             )
         for doc in documents:
@@ -248,7 +248,7 @@ _COLLATE_NON_TENSOR_KEYS = frozenset({
 })
 
 
-def v8_collate_fn(batch: list[dict]) -> dict:
+def collate_fn(batch: list[dict]) -> dict:
     """Pad tensor fields, keep children_info as a list."""
     max_len = max(item["token_ids"].size(0) for item in batch)
     padded: dict[str, list[torch.Tensor]] = {

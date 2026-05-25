@@ -2,24 +2,24 @@ import torch
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import compute_children_info
-from yaml_bert.v8_model import V8Model
+from yaml_bert.dataset import compute_children_info
+from yaml_bert.model import YamlBertModel
 from yaml_bert.vocab import VocabBuilder
 
 
-def test_v8_model_forward_pass_shape():
-    """V8Model forward returns logits of shape (B, N, atomic_vocab_size)."""
+def test_model_forward_pass_shape():
+    """YamlBertModel forward returns logits of shape (B, N, atomic_vocab_size)."""
     yaml_str = "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n  - name: x\n"
     nodes = YamlLinearizer().linearize(yaml_str)
     vocab = VocabBuilder().build(nodes, min_freq=1)
     info = compute_children_info(nodes)
 
     config = YamlBertConfig(d_model=32, num_layers=2, num_heads=4,
-                            tree_bias_enabled=False, v8_mode=True)
+                            )
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
 
     n = len(nodes)
@@ -40,7 +40,7 @@ def test_v8_model_forward_pass_shape():
     assert doc_vec.shape == (1, 32)
 
 
-def test_v8_model_backward_no_nan():
+def test_model_backward_no_nan():
     """Loss is finite and gradients exist after one backward pass."""
     yaml_str = "apiVersion: v1\nkind: Pod\nmetadata:\n  name: x\n"
     nodes = YamlLinearizer().linearize(yaml_str)
@@ -48,11 +48,11 @@ def test_v8_model_backward_no_nan():
     info = compute_children_info(nodes)
 
     config = YamlBertConfig(d_model=32, num_layers=2, num_heads=4,
-                            tree_bias_enabled=False, v8_mode=True)
+                            )
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
 
     n = len(nodes)
@@ -80,13 +80,13 @@ def test_v8_model_backward_no_nan():
     assert grads_nonzero
 
 
-def test_v8_smoke_e2e_small_batch():
+def test_smoke_e2e_small_batch():
     """End-to-end: dataset → collate → model → loss → backward."""
     from yaml_bert.linearizer import YamlLinearizer
     from yaml_bert.vocab import VocabBuilder
     from yaml_bert.config import YamlBertConfig
     from yaml_bert.embedding import YamlBertEmbedding
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
 
     yamls = [
         "apiVersion: v1\nkind: Pod\nmetadata:\n  name: a\n",
@@ -98,14 +98,14 @@ def test_v8_smoke_e2e_small_batch():
     vocab = VocabBuilder().build(flat, min_freq=1)
 
     config = YamlBertConfig(d_model=32, num_layers=2, num_heads=4,
-                            v8_mode=True, mask_prob=0.5)
-    ds = V8Dataset(documents, vocab, config)
-    batch = v8_collate_fn([ds[i] for i in range(len(ds))])
+                            mask_prob=0.5)
+    ds = YamlBertDataset(documents, vocab, config)
+    batch = collate_fn([ds[i] for i in range(len(ds))])
 
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
 
     logits, doc_vec = model(
@@ -126,8 +126,8 @@ def test_v8_smoke_e2e_small_batch():
     loss.backward()
 
 
-def test_v8_smoke_e2e_vectorized_path():
-    """End-to-end with v8_collate_fn precompute kwargs passed to V8Model.
+def test_smoke_e2e_vectorized_path():
+    """End-to-end with collate_fn precompute kwargs passed to YamlBertModel.
 
     Asserts the vectorized path produces logits and a loss, AND that the
     logits are numerically equivalent to the reference path on the same
@@ -136,7 +136,7 @@ def test_v8_smoke_e2e_vectorized_path():
     from yaml_bert.vocab import VocabBuilder
     from yaml_bert.config import YamlBertConfig
     from yaml_bert.embedding import YamlBertEmbedding
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
 
     yamls = [
         "apiVersion: v1\nkind: Pod\nmetadata:\n  name: a\n",
@@ -148,14 +148,14 @@ def test_v8_smoke_e2e_vectorized_path():
     vocab = VocabBuilder().build(flat, min_freq=1)
 
     config = YamlBertConfig(d_model=32, num_layers=2, num_heads=4,
-                            v8_mode=True, mask_prob=0.5)
-    ds = V8Dataset(documents, vocab, config)
-    batch = v8_collate_fn([ds[i] for i in range(len(ds))])
+                            mask_prob=0.5)
+    ds = YamlBertDataset(documents, vocab, config)
+    batch = collate_fn([ds[i] for i in range(len(ds))])
 
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
     model.eval()  # disable dropout for deterministic comparison
 
@@ -219,8 +219,8 @@ def test_v8_smoke_e2e_vectorized_path():
     assert all(torch.isfinite(g).all() for g in grads), "non-finite gradient"
 
 
-def test_v8_model_returns_recon_logits_when_subtree_info_provided():
-    """V8Model.forward returns recon_logits with shape (M, V_atomic) when
+def test_model_returns_recon_logits_when_subtree_info_provided():
+    """YamlBertModel.forward returns recon_logits with shape (M, V_atomic) when
     the batch contains subtree_roots_flat (i.e., recon is active).
 
     Uses a large YAML (55+ nodes) to guarantee pick_subtrees returns at least
@@ -231,7 +231,7 @@ def test_v8_model_returns_recon_logits_when_subtree_info_provided():
     from yaml_bert.vocab import VocabBuilder
     from yaml_bert.config import YamlBertConfig
     from yaml_bert.embedding import YamlBertEmbedding
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
 
     # Large YAML docs (55+ nodes each) to satisfy pick_subtrees' size threshold.
     yamls = [
@@ -260,9 +260,9 @@ def test_v8_model_returns_recon_logits_when_subtree_info_provided():
     flat = [n for doc in docs for n in doc]
     vocab = VocabBuilder().build(flat, min_freq=1)
     config = YamlBertConfig(d_model=32, num_layers=2, num_heads=4,
-                            v8_mode=True, mask_prob=0.0, recon_enabled=True)
-    ds = V8Dataset(docs, vocab, config)
-    batch = v8_collate_fn([ds[i] for i in range(len(ds))])
+                            mask_prob=0.0, recon_enabled=True)
+    ds = YamlBertDataset(docs, vocab, config)
+    batch = collate_fn([ds[i] for i in range(len(ds))])
     # With large docs and mask_prob=0.0 (no MLM competing for positions),
     # pick_subtrees reliably returns >= 1 root.
     assert batch["subtree_roots_flat"].size(0) > 0, (
@@ -273,7 +273,7 @@ def test_v8_model_returns_recon_logits_when_subtree_info_provided():
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
     model.train()
 
@@ -308,14 +308,14 @@ def test_v8_model_returns_recon_logits_when_subtree_info_provided():
         assert torch.isfinite(p.grad).all(), f"recon_head.{name} gradient is non-finite"
 
 
-def test_v8_model_omits_recon_logits_when_no_subtree_info():
-    """V8Model.forward returns (logits, doc_vec) — old shape — when subtree
+def test_model_omits_recon_logits_when_no_subtree_info():
+    """YamlBertModel.forward returns (logits, doc_vec) — old shape — when subtree
     kwargs are absent. Backward-compat with Phase 0/1 callers."""
     from yaml_bert.linearizer import YamlLinearizer
     from yaml_bert.vocab import VocabBuilder
     from yaml_bert.config import YamlBertConfig
     from yaml_bert.embedding import YamlBertEmbedding
-    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+    from yaml_bert.dataset import YamlBertDataset, collate_fn
 
     yamls = ["apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"]
     docs = [YamlLinearizer().linearize(y) for y in yamls]
@@ -323,14 +323,14 @@ def test_v8_model_omits_recon_logits_when_no_subtree_info():
     vocab = VocabBuilder().build(flat, min_freq=1)
     # recon_enabled=False → dataset omits subtree fields → forward omits recon
     config = YamlBertConfig(d_model=16, num_layers=1, num_heads=2,
-                            v8_mode=True, mask_prob=0.0, recon_enabled=False)
-    ds = V8Dataset(docs, vocab, config)
-    batch = v8_collate_fn([ds[0]])
+                            mask_prob=0.0, recon_enabled=False)
+    ds = YamlBertDataset(docs, vocab, config)
+    batch = collate_fn([ds[0]])
 
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
     model.eval()
     out = model(

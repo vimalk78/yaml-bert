@@ -1,5 +1,5 @@
 """V8 capability tests: same 93 test cases as v7's test_capabilities.py,
-adapted to v8's V8Model + atomic-prediction head.
+adapted to v8's YamlBertModel + atomic-prediction head.
 
 V7 uses compound bigram/trigram prediction (vocab ~28K). V8 uses atomic
 prediction (vocab ~427). The test cases' `expect_in_top5` lists are already
@@ -28,14 +28,14 @@ from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.types import NodeType
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
-from yaml_bert.v8_model import V8Model
+from yaml_bert.dataset import YamlBertDataset, collate_fn
+from yaml_bert.model import YamlBertModel
 from yaml_bert.vocab import Vocabulary
 
 
-def run_v8_test(model: V8Model, vocab: Vocabulary, config: YamlBertConfig,
+def run_test(model: YamlBertModel, vocab: Vocabulary, config: YamlBertConfig,
                 test):
-    """Run a single capability test against V8Model. Returns TestResult."""
+    """Run a single capability test against YamlBertModel. Returns TestResult."""
     from model_tests._cases_capabilities import TestResult
 
     linearizer = YamlLinearizer()
@@ -56,10 +56,10 @@ def run_v8_test(model: V8Model, vocab: Vocabulary, config: YamlBertConfig,
         return TestResult(test.name, False,
                           f"Token '{test.mask_token}' not found", [])
 
-    # Build a single-doc batch via V8Dataset + v8_collate_fn so we get all
+    # Build a single-doc batch via YamlBertDataset + collate_fn so we get all
     # the precompute tensors (parent_of_tensor, edges_by_depth, etc.) the
-    # vectorized V8Model.forward expects.
-    ds = V8Dataset([nodes], vocab, config)
+    # vectorized YamlBertModel.forward expects.
+    ds = YamlBertDataset([nodes], vocab, config)
     item = ds[0]
 
     # Apply mask AFTER dataset construction (dataset's MLM is disabled via
@@ -68,7 +68,7 @@ def run_v8_test(model: V8Model, vocab: Vocabulary, config: YamlBertConfig,
     item["token_ids"] = item["token_ids"].clone()
     item["token_ids"][mask_pos] = mask_id
 
-    batch = v8_collate_fn([item])
+    batch = collate_fn([item])
 
     model.eval()
     with torch.no_grad():
@@ -84,7 +84,7 @@ def run_v8_test(model: V8Model, vocab: Vocabulary, config: YamlBertConfig,
             edges_by_depth=batch["edges_by_depth"],
             parents_by_depth=batch["parents_by_depth"],
         )
-    # V8Model returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
+    # YamlBertModel returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
     logits = out[0]  # (1, N, V_atomic)
 
     probs = F.softmax(logits[0, mask_pos], dim=-1)
@@ -114,7 +114,7 @@ def main() -> None:
     args = parser.parse_args()
 
     vocab = Vocabulary.load(args.vocab)
-    config = YamlBertConfig(v8_mode=True, recon_enabled=False, mask_prob=0.0)
+    config = YamlBertConfig(recon_enabled=False, mask_prob=0.0)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
 
     torch.manual_seed(42)
@@ -123,7 +123,7 @@ def main() -> None:
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
     )
-    model = V8Model(
+    model = YamlBertModel(
         config=config,
         embedding=emb,
         atomic_vocab_size=vocab.atomic_target_vocab_size,
@@ -149,7 +149,7 @@ def main() -> None:
     finetune_caps_pass = finetune_caps_total = 0
 
     for cap in capabilities:
-        cap_results = [run_v8_test(model, vocab, config, t) for t in cap.tests]
+        cap_results = [run_test(model, vocab, config, t) for t in cap.tests]
         n_pass = sum(1 for r in cap_results if r.passed)
         n_total = len(cap_results)
         all_pass = n_pass == n_total

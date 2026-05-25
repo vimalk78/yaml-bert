@@ -16,15 +16,15 @@ from tqdm.auto import tqdm
 from yaml_bert.cache import build_or_load_cache
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
-from yaml_bert.v8_model import V8Model
+from yaml_bert.dataset import YamlBertDataset, collate_fn
+from yaml_bert.model import YamlBertModel
 from yaml_bert.vocab import VocabBuilder
 
 DATASET_NAME = "substratusai/the-stack-yaml-k8s"
 
 
 def _forward_v8(model, batch, device, recon_enabled: bool):
-    """Forward V8Model. Returns (logits, doc_vec, recon_logits|None)."""
+    """Forward YamlBertModel. Returns (logits, doc_vec, recon_logits|None)."""
     kwargs = dict(
         token_ids=batch["token_ids"].to(device),
         node_types=batch["node_types"].to(device),
@@ -82,7 +82,7 @@ def _dump_doc_vecs(model, dataset, batch_size, device, recon_enabled,
     from yaml_bert.types import _extract_kind
     model.eval()
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                       collate_fn=v8_collate_fn, num_workers=num_workers)
+                       collate_fn=collate_fn, num_workers=num_workers)
     doc_vecs: list[torch.Tensor] = []
     doc_kinds: list[str] = []
     dump_iter = tqdm(
@@ -154,9 +154,9 @@ def main() -> None:
 
     print("Step 2: Build dataset (train: 90%, val: 10%)")
     config = YamlBertConfig(num_epochs=args.epochs, batch_size=args.batch_size,
-                            v8_mode=True, recon_enabled=recon_enabled,
+                            recon_enabled=recon_enabled,
                             recon_loss_weight=args.recon_weight)
-    full_dataset = V8Dataset(cached, vocab, config)
+    full_dataset = YamlBertDataset(cached, vocab, config)
     # Val size: ~10% capped at 2000 (prevents 30K val passes from dominating
     # full-corpus runs). At 5K corpus → 500; at 276K corpus → 2000.
     val_size = max(1, min(2000, len(cached) // 10))
@@ -170,7 +170,7 @@ def main() -> None:
     emb = YamlBertEmbedding(config=config,
                             key_vocab_size=vocab.key_vocab_size,
                             value_vocab_size=vocab.value_vocab_size)
-    model = V8Model(config=config, embedding=emb,
+    model = YamlBertModel(config=config, embedding=emb,
                     atomic_vocab_size=vocab.atomic_target_vocab_size)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
@@ -182,11 +182,11 @@ def main() -> None:
 
     num_workers = min(8, max(2, (os.cpu_count() or 4) // 2))
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
-                              shuffle=True, collate_fn=v8_collate_fn,
+                              shuffle=True, collate_fn=collate_fn,
                               num_workers=num_workers, persistent_workers=True,
                               pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
-                            shuffle=False, collate_fn=v8_collate_fn,
+                            shuffle=False, collate_fn=collate_fn,
                             num_workers=num_workers, pin_memory=True)
 
     print("Step 4: Training")

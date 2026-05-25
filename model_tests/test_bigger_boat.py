@@ -1,4 +1,4 @@
-"""V8 bigger-boat tests: same 13 tests as test_bigger_boat.py, adapted to V8Model.
+"""V8 bigger-boat tests: same 13 tests as test_bigger_boat.py, adapted to YamlBertModel.
 
 V8 uses atomic-vocab prediction (~427 tokens) instead of v7's compound-vocab.
 Atomic predictions are already raw key names — no path stripping needed.
@@ -21,21 +21,21 @@ from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
-from yaml_bert.v8_model import V8Model
+from yaml_bert.dataset import YamlBertDataset, collate_fn
+from yaml_bert.model import YamlBertModel
 from yaml_bert.vocab import Vocabulary
 
 from model_tests._cases_capabilities import TestCase, TestResult, _check_assertions
 from model_tests._cases_bigger_boat import run_bigger_boat_tests
 
 
-def run_v8_bigger_boat_test(
-    model: V8Model,
+def run_bigger_boat_test(
+    model: YamlBertModel,
     vocab: Vocabulary,
     config: YamlBertConfig,
     test: TestCase,
 ) -> TestResult:
-    """Run a single bigger-boat test case against V8Model. Returns TestResult."""
+    """Run a single bigger-boat test case against YamlBertModel. Returns TestResult."""
     linearizer = YamlLinearizer()
     annotator = DomainAnnotator()
 
@@ -54,10 +54,10 @@ def run_v8_bigger_boat_test(
         return TestResult(test.name, False,
                           f"Token '{test.mask_token}' not found", [])
 
-    # Build a single-doc batch via V8Dataset + v8_collate_fn so we get all
+    # Build a single-doc batch via YamlBertDataset + collate_fn so we get all
     # precomputed tensors (parent_of_tensor, edges_by_depth, etc.) that
-    # the vectorised V8Model.forward expects.
-    ds = V8Dataset([nodes], vocab, config)
+    # the vectorised YamlBertModel.forward expects.
+    ds = YamlBertDataset([nodes], vocab, config)
     item = ds[0]
 
     # Apply mask AFTER dataset construction (mask_prob=0.0 means no random masking)
@@ -65,7 +65,7 @@ def run_v8_bigger_boat_test(
     item["token_ids"] = item["token_ids"].clone()
     item["token_ids"][mask_pos] = mask_id
 
-    batch = v8_collate_fn([item])
+    batch = collate_fn([item])
 
     model.eval()
     with torch.no_grad():
@@ -81,7 +81,7 @@ def run_v8_bigger_boat_test(
             edges_by_depth=batch["edges_by_depth"],
             parents_by_depth=batch["parents_by_depth"],
         )
-    # V8Model returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
+    # YamlBertModel returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
     logits = out[0]  # (1, N, V_atomic)
 
     probs = F.softmax(logits[0, mask_pos], dim=-1)
@@ -110,7 +110,7 @@ def main() -> None:
     args = parser.parse_args()
 
     vocab = Vocabulary.load(args.vocab)
-    config = YamlBertConfig(v8_mode=True, recon_enabled=False, mask_prob=0.0)
+    config = YamlBertConfig(recon_enabled=False, mask_prob=0.0)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
 
     torch.manual_seed(42)
@@ -119,7 +119,7 @@ def main() -> None:
         key_vocab_size=vocab.key_vocab_size,
         value_vocab_size=vocab.value_vocab_size,
     )
-    model = V8Model(
+    model = YamlBertModel(
         config=config,
         embedding=emb,
         atomic_vocab_size=vocab.atomic_target_vocab_size,
@@ -132,7 +132,7 @@ def main() -> None:
     header = f"V8 Bigger Boat — checkpoint epoch {epoch} | atomic vocab: {vocab.atomic_target_vocab_size}"
 
     def run_test_fn(t: TestCase) -> TestResult:
-        return run_v8_bigger_boat_test(model, vocab, config, t)
+        return run_bigger_boat_test(model, vocab, config, t)
 
     run_bigger_boat_tests(run_test_fn, show_passes=args.show_passes, header=header)
 

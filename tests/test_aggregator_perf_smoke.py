@@ -10,7 +10,7 @@ import torch
 
 from yaml_bert.aggregator import TreeAggregator
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+from yaml_bert.dataset import YamlBertDataset, collate_fn
 from yaml_bert.vocab import VocabBuilder
 from yaml_bert.config import YamlBertConfig
 
@@ -83,9 +83,9 @@ def _make_batch(batch_size: int = 32, d_model: int = 256):
     docs = [YamlLinearizer().linearize(y) for y in yamls]
     flat = [n for d in docs for n in d]
     vocab = VocabBuilder().build(flat, min_freq=1)
-    config = YamlBertConfig(v8_mode=True, mask_prob=0.0, d_model=d_model)
-    ds = V8Dataset(docs, vocab, config)
-    batch = v8_collate_fn([ds[i] for i in range(len(ds))])
+    config = YamlBertConfig(mask_prob=0.0, d_model=d_model)
+    ds = YamlBertDataset(docs, vocab, config)
+    batch = collate_fn([ds[i] for i in range(len(ds))])
     B, N = batch["token_ids"].shape
     torch.manual_seed(0)
     hidden = torch.randn(B, N, d_model)
