@@ -309,3 +309,134 @@ cheaper, faster, and answers the immediate question ("are the ±1pp deltas
 real?"). If multi-seed shows recon is consistently beneficial on k-NN, then
 option 1 to scale up. If multi-seed shows the deltas are within seed noise,
 park recon and pursue downstream-task design.
+
+## Addendum 2 — multi-seed verdict (FINAL)
+
+Ran 4 additional training runs (seeds 7 and 123 × control + treatment) to
+bound noise on the ±1pp deltas. Combined with the existing seed-42 results,
+this gives a 3-seed comparison per condition.
+
+### Cost / time
+
+JL L4 instance `415487`, ~$0.30 total, 4 sequential runs took ~10 minutes.
+
+### Final-epoch results: mean ± std across 3 seeds
+
+|probe | control (mean ± std) | treatment (mean ± std) | Δ | significance |
+|---|---|---|---|---|
+| kind                   |  99.96% ± 0.07 |  99.91% ± 0.07 |  −0.04pp | within noise |
+| has_containers         |  99.97% ± 0.06 |  99.97% ± 0.06 |  +0.00pp | within noise |
+| has_init_containers    |  96.70% ± 0.46 |  95.90% ± 0.46 |  −0.80pp | suggestive (Δ > σ) |
+| has_volume_mounts      |  98.43% ± 0.64 |  98.60% ± 0.30 |  +0.17pp | within noise |
+| has_tolerations        |  97.50% ± 0.30 |  97.40% ± 0.36 |  −0.10pp | within noise |
+| **has_affinity**       |  **98.80% ± 0.17** |  **98.13% ± 0.21** |  **−0.67pp** | **REAL** (Δ > 2σ) |
+| has_multi_containers   |  96.40% ± 0.17 |  96.63% ± 0.23 |  +0.23pp | suggestive |
+| has_resource_limits    |  97.17% ± 0.70 |  96.70% ± 0.44 |  −0.47pp | within noise |
+| has_readiness_probe    |  98.13% ± 0.38 |  97.70% ± 0.46 |  −0.43pp | suggestive |
+| service_type (4-cls)   |  89.32% ± 2.95 |  86.27% ± 3.00 |  −3.05pp | suggestive (large σ) |
+| update_strategy (3-cls)|  96.11% ± 1.17 |  94.29% ± 1.37 |  −1.82pp | suggestive |
+| triplet                |  96.85% ± 0.50 |  97.14% ± 0.55 |  +0.29pp | within noise |
+| **knn5**               |  **93.99% ± 0.78** |  **94.73% ± 0.85** |  **+0.73pp** | **WITHIN NOISE** |
+
+Legend:
+- **REAL** (Δ > 2·pooled_std): statistically significant signal
+- *suggestive* (σ < Δ < 2σ): pattern but inside noise floor
+- *within noise* (Δ < σ): no evidence either way
+
+### Critical finding: the +0.8pp k-NN signal was a one-seed anomaly
+
+In the single-seed analysis (Addendum 1), k-NN purity was the most encouraging
+result: treatment beat control by +0.3 to +0.8pp across 9 of 10 epochs with the
+gap growing over training. It looked like real geometric improvement.
+
+Multi-seed says no:
+- Control: 93.99% ± 0.78
+- Treatment: 94.73% ± 0.85
+- Pooled std: 0.82
+- Δ = +0.73pp < pooled_std → **within seed noise**
+
+The k-NN improvement we celebrated at single-seed was within the run-to-run
+variance of training itself. Seed 42 happened to land favorably for treatment;
+seeds 7 and 123 don't replicate it. The "geometric clustering hypothesis" does
+not hold under multi-seed validation.
+
+### What IS statistically real
+
+The only effect that crosses the |Δ| > 2σ threshold is:
+- **has_affinity: treatment −0.67pp** (control 98.80, treatment 98.13)
+
+This is a small but real *regression* — treatment is worse at the affinity
+probe. Combined with the suggestive negative effects on init_containers,
+readiness_probe, and the two multi-class probes, the net direction of
+reconstruction is mildly negative on linear-decodability tasks, with no
+compensating gain on geometric tasks.
+
+### Decision: NO-GO on reconstruction
+
+Per the original spec's NO-GO branch: "recon objective is broken or doesn't
+help. Either re-think the objective or abandon and move on to combine-function
+or eval framework."
+
+The reconstruction objective as implemented (bag-of-keys BCE on masked
+subtrees) does not measurably improve `doc_vec` quality at this scale on any
+of 13 probes. The only architectural-cost-worth-paying outcome (better
+geometric clustering for embedding/retrieval use) is not supported by the
+data — the +0.8pp k-NN signal was a single-seed artifact.
+
+### Cost we're not paying anymore
+
+- Recon head: +307K params (~5% of total model)
+- Training: +6.6% wall time (extra forward/backward through recon head + collate cost)
+- Code complexity: ~600 lines across subtree_masking, reconstruction_head, leak-aware aggregator paths
+
+### What stays in the codebase
+
+Recon code stays in place, gated by `config.recon_enabled` (default
+**False**). Reasons:
+- Leak-aware aggregator path and subtree-masking primitives may be reusable
+  for v9 contrastive learning (see Strategic note below).
+- No production impact: the default trainer + V8Model don't activate it.
+- Removal cost is low if we change our mind later; preservation cost is
+  ~zero (gated code paths, all tests still cover both modes).
+
+### Strategic note: where does this leave the embedding-model vision?
+
+The reconstruction objective was a self-supervised attempt to get geometric
+clustering "for free." It didn't work, which is consistent with how
+embedding models actually become good:
+
+> all-mpnet-base-v2 isn't great at retrieval because of MLM pretraining;
+> it's great because it was *contrastively fine-tuned* on 1B+ paraphrase
+> pairs.
+
+For YAML-BERT to serve as an embedding model in agent pipelines (the
+articulated downstream vision — cluster auto-healing, manifest similarity,
+template clustering, drift detection), the right architectural path is
+**contrastive learning with explicit similarity supervision** — not more
+self-supervised objectives.
+
+Candidate sources of "similar YAML manifest" pairs:
+1. Helm-template families (one chart → many Deployments)
+2. Kustomize-overlay variants (base + per-env overlays)
+3. ArgoCD app-of-apps families
+4. GitHub commit history of YAML files (consecutive small edits)
+5. Synthetic mutations (trivial: rename label, change replicas; non-trivial:
+   reorder sibling keys, expand abbreviations)
+
+This is a **v9 architecture** scoped beyond a Phase 1 mini-cycle. The
+reconstruction infrastructure (subtree masking, leak-aware aggregator) may
+be reusable; the head and the loss are not.
+
+### Next mini-cycle options (post-recon)
+
+1. **v9 contrastive design** — major brainstorm. Scope data sources, define
+   contrastive loss, decide whether to keep MLM as auxiliary, plan
+   evaluation as retrieval benchmark.
+2. **Validate the vision first** — quick test: take a generic code embedding
+   model (voyage-code-3, e5-code, CodeBERT) and run it against the same
+   probes + a hand-built retrieval set. If it's already good enough for the
+   intended use, building v9 is over-engineering.
+3. **Combine function** — replace mean aggregator with attention pooling.
+   Smaller scope; might help geometric quality. Independent of contrastive.
+4. **Scale-up to 276K** — train v8 (MLM-only, no recon) at full corpus and
+   re-measure. May change which findings hold.
