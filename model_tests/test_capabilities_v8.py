@@ -19,7 +19,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 
-from model_tests.test_capabilities import (
+from model_tests._cases_capabilities import (
     build_capabilities,
     _check_assertions,
 )
@@ -36,7 +36,7 @@ from yaml_bert.vocab import Vocabulary
 def run_v8_test(model: V8Model, vocab: Vocabulary, config: YamlBertConfig,
                 test):
     """Run a single capability test against V8Model. Returns TestResult."""
-    from model_tests.test_capabilities import TestResult
+    from model_tests._cases_capabilities import TestResult
 
     linearizer = YamlLinearizer()
     annotator = DomainAnnotator()

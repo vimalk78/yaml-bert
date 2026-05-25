@@ -24,7 +24,7 @@ from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
 from yaml_bert.v8_model import V8Model
 from yaml_bert.vocab import Vocabulary
 
-from model_tests.test_structural import run_tests, print_predictions  # noqa: F401
+from model_tests._cases_structural import run_tests, print_predictions  # noqa: F401
 
 
 def predict_masked_key_v8(

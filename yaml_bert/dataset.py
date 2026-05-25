@@ -14,17 +14,7 @@ from yaml_bert.types import NodeType, YamlNode
 from yaml_bert.vocab import Vocabulary, compute_target
 
 
-def _extract_kind(nodes: list[YamlNode]) -> str:
-    """Extract the kind value from a document's node list, normalized to canonical casing."""
-    from yaml_bert.vocab import normalize_kind
-    for i, node in enumerate(nodes):
-        if (node.token == "kind"
-            and node.depth == 0
-            and node.node_type == NodeType.KEY
-            and i + 1 < len(nodes)
-            and nodes[i + 1].node_type == NodeType.VALUE):
-            return normalize_kind(nodes[i + 1].token)
-    return ""
+from yaml_bert.types import _extract_kind  # noqa: F401 — backward-compat alias
 
 
 # NodeType to integer index mapping

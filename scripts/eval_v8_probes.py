@@ -29,7 +29,7 @@ import torch
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
-from yaml_bert.dataset import _extract_kind
+from yaml_bert.types import _extract_kind
 from yaml_bert.types import NodeType, YamlNode
 
 

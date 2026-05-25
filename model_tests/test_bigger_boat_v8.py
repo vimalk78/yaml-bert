@@ -25,8 +25,8 @@ from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
 from yaml_bert.v8_model import V8Model
 from yaml_bert.vocab import Vocabulary
 
-from model_tests.test_capabilities import TestCase, TestResult, _check_assertions
-from model_tests.test_bigger_boat import run_bigger_boat_tests
+from model_tests._cases_capabilities import TestCase, TestResult, _check_assertions
+from model_tests._cases_bigger_boat import run_bigger_boat_tests
 
 
 def run_v8_bigger_boat_test(

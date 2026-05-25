@@ -17,17 +17,70 @@ from typing import Any
 import torch
 import torch.nn.functional as F
 
+import yaml as _yaml
+
 from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.config import YamlBertConfig
-from yaml_bert.dataset import _extract_kind
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.types import NodeType, YamlNode
+from yaml_bert.types import NodeType, YamlNode, _extract_kind  # noqa: F401
 from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
 from yaml_bert.v8_model import V8Model
 from yaml_bert.vocab import Vocabulary
 
-# Imported here so downstream code can reference suggest_v8._CLUSTER_MANAGED_KEYS
-from yaml_bert.suggest import _CLUSTER_MANAGED_KEYS, _find_empty_mapping_paths  # noqa: F401
+# Keys managed by the cluster, not written by users
+_CLUSTER_MANAGED_KEYS: set[str] = {
+    "status", "creationTimestamp", "generation", "resourceVersion",
+    "selfLink", "uid", "managedFields",
+}
+
+
+def _find_empty_mapping_paths(yaml_text: str) -> list[tuple[str, str, int]]:
+    """Walk the YAML and find keys whose value is an empty mapping ({}).
+    These are not represented as 'parents' in the linearized output because
+    they have no child KEY nodes, but they are valid probe positions.
+
+    Returns list of (full_path, key_name, child_depth) tuples.
+    full_path: dotted path that becomes parent_path of the would-be child.
+    key_name: the empty parent's key (used as parent_key_name during probe).
+    child_depth: depth at which children would be emitted by the linearizer.
+    """
+    try:
+        data = _yaml.safe_load(yaml_text)
+    except Exception:
+        return []
+    if data is None:
+        return []
+    results: list[tuple[str, str, int]] = []
+
+    def walk(d: Any, depth: int, parent_path: str) -> None:
+        if isinstance(d, dict):
+            for k, v in d.items():
+                k_str = str(k)
+                child_path = f"{parent_path}.{k_str}" if parent_path else k_str
+                if isinstance(v, dict):
+                    if not v:
+                        results.append((child_path, k_str, depth + 1))
+                    else:
+                        walk(v, depth + 1, child_path)
+                elif isinstance(v, list):
+                    walk_list(v, depth + 1, child_path)
+                elif v is None:
+                    # `key:` with no value (parses as None in PyYAML). Treat as
+                    # potential empty mapping — probe under it. If the position
+                    # is truly scalar (e.g. `image:`), the model's predictions
+                    # will be diffuse/low-confidence and nothing surfaces.
+                    results.append((child_path, k_str, depth + 1))
+
+    def walk_list(lst: list, depth: int, parent_path: str) -> None:
+        for i, item in enumerate(lst):
+            item_path = f"{parent_path}.{i}"
+            if isinstance(item, dict):
+                walk(item, depth, item_path)  # list items don't increment depth
+            elif isinstance(item, list):
+                walk_list(item, depth, item_path)
+
+    walk(data, 0, "")
+    return results
 
 
 _NODE_TYPE_INDEX: dict[NodeType, int] = {

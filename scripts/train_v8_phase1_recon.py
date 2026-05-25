@@ -79,7 +79,7 @@ def _compute_losses(out, batch, device, recon_enabled: bool, recon_weight: float
 def _dump_doc_vecs(model, dataset, batch_size, device, recon_enabled,
                    output_path, cached, num_workers):
     """One pass over the FULL 5K corpus dumping doc_vecs to disk."""
-    from yaml_bert.dataset import _extract_kind
+    from yaml_bert.types import _extract_kind
     model.eval()
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                        collate_fn=v8_collate_fn, num_workers=num_workers)
