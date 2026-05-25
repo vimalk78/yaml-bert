@@ -65,13 +65,19 @@ class ReconstructionHead(nn.Module):
         )
 
     def forward(self, doc_vec_per_subtree, pos_emb_per_subtree):
-        # doc_vec_per_subtree: (M, d_model) — repeated per subtree in batch
-        # pos_emb_per_subtree: (M, d_pos)  — root position embedding per subtree
+        # doc_vec_per_subtree: (M, d_model)         — repeated per subtree in batch
+        # pos_emb_per_subtree: (M, d_pos)           — [depth_emb ; sibling_emb] of root
+        #                                             (d_pos = d_depth + d_sibling)
         # Returns logits (M, V_atomic)
         return self.mlp(torch.cat([doc_vec_per_subtree, pos_emb_per_subtree], dim=-1))
 ```
 
-The position embedding is built from the existing depth + sibling + node_type embeddings (concat); no new learnable embeddings.
+The position embedding is `[depth_emb(root) ; sibling_emb(root)]` — concat of the existing learned depth and sibling embeddings. No new learnable embeddings.
+
+**Deliberately excluded:**
+- `node_type_emb(root)` — always KEY for masked subtree roots (we only pick KEY positions with children); constant, no signal.
+- The root's KEY identity (e.g., "containers" vs "metadata") — including it would let the head memorize a per-key lookup table ("containers subtrees have keys {name, image, ports, env}"), making doc_vec unnecessary for prediction and *removing the pretraining pressure on doc_vec*. The head is intentionally under-informed about the root key so doc_vec becomes load-bearing.
+- The encoder's hidden state at the root position (`h_root`) — would be a soft leak (encoder's MLM-style guess of what the root key was), same logic as the aggregator leak we eliminated.
 
 `M = Σ_b len(subtree_roots[b])` — total number of masked subtrees in a batch (1-3 per doc × 32 docs ≈ 32-96). Trivial compute vs encoder.
 
