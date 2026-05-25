@@ -1,286 +1,288 @@
-import os
-
 import torch
+
 from yaml_bert.config import YamlBertConfig
-from yaml_bert.dataset import YamlDataset
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.annotator import DomainAnnotator
-from yaml_bert.vocab import VocabBuilder
-from yaml_bert.types import NodeType
-
-TEMPLATES_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "data", "k8s-yamls"
-)
+from yaml_bert.v8_dataset import V8Dataset, compute_children_info, v8_collate_fn
 
 
-def _build_vocab():
-    linearizer = YamlLinearizer()
-    annotator = DomainAnnotator()
-    import glob
-    all_nodes = []
-    for path in glob.glob(os.path.join(TEMPLATES_DIR, "**", "*.yaml"), recursive=True):
-        nodes = linearizer.linearize_file(path)
-        annotator.annotate(nodes)
-        all_nodes.extend(nodes)
-    return VocabBuilder().build(all_nodes)
+def test_compute_children_info_simple():
+    """For 'spec: {replicas: 3}', spec has 1 child (replicas)."""
+    nodes = YamlLinearizer().linearize("spec:\n  replicas: 3\n")
+    info = compute_children_info(nodes)
+
+    # info["children_of"][i] = list of positions that are children of position i
+    # info["parent_of"][i] = position of i's parent (or -1 if root)
+    # info["key_positions"] = sorted list of positions whose node_type is KEY/LIST_KEY
+    # info["depth_of"][i] = depth at position i
+
+    assert "spec" in [nodes[p].token for p in info["key_positions"]]
+    assert "replicas" in [nodes[p].token for p in info["key_positions"]]
+
+    # spec is at position 0, has children: replicas (pos 1)
+    spec_pos = next(p for p in info["key_positions"] if nodes[p].token == "spec")
+    assert nodes[info["children_of"][spec_pos][0]].token == "replicas"
 
 
-def test_dataset_length():
-    vocab = _build_vocab()
-    dataset = YamlDataset(
-        yaml_dir=TEMPLATES_DIR,
-        vocab=vocab,
-        linearizer=YamlLinearizer(),
-        annotator=DomainAnnotator(),
-    )
-    assert len(dataset) > 40
+def test_compute_children_info_nested():
+    """For nested structure, children_of correctly tracks parent-child."""
+    yaml_str = """\
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+"""
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
+
+    by_token = {nodes[p].token: p for p in info["key_positions"]}
+
+    spec_pos = by_token["spec"]
+    selector_pos = by_token["selector"]
+    matchLabels_pos = by_token["matchLabels"]
+    app_pos = by_token["app"]
+
+    assert info["children_of"][spec_pos] == [selector_pos]
+    assert info["children_of"][selector_pos] == [matchLabels_pos]
+    assert info["children_of"][matchLabels_pos] == [app_pos]
+
+    assert info["parent_of"][selector_pos] == spec_pos
+    assert info["parent_of"][matchLabels_pos] == selector_pos
 
 
-def test_dataset_item_keys():
-    vocab = _build_vocab()
-    dataset = YamlDataset(
-        yaml_dir=TEMPLATES_DIR,
-        vocab=vocab,
-        linearizer=YamlLinearizer(),
-        annotator=DomainAnnotator(),
-    )
-    item = dataset[0]
+def test_compute_children_info_list_of_mappings():
+    """KEYs inside list items should link to the list-key (not be orphaned).
 
-    expected_keys = {
-        "token_ids", "node_types", "depths",
-        "sibling_indices", "parent_key_ids", "labels", "kind_ids",
-    }
-    assert set(item.keys()) == expected_keys
-
-    seq_len = item["token_ids"].shape[0]
-    for key in expected_keys:
-        assert item[key].shape == (seq_len,), f"{key} shape mismatch"
-
-    for key in expected_keys:
-        assert item[key].dtype == torch.long, f"{key} dtype mismatch"
-
-
-def test_dataset_masking_only_keys():
-    vocab = _build_vocab()
-    high_mask_config = YamlBertConfig(mask_prob=0.5)
-    dataset = YamlDataset(
-        yaml_dir=TEMPLATES_DIR,
-        vocab=vocab,
-        linearizer=YamlLinearizer(),
-        annotator=DomainAnnotator(),
-        config=high_mask_config,
-    )
-
-    item = dataset[0]
-    labels = item["labels"]
-    node_types = item["node_types"]
-
-    masked_positions = labels != -100
-    if masked_positions.any():
-        masked_types = node_types[masked_positions]
-        for t in masked_types:
-            assert t.item() in (0, 2), f"Masked a non-key node: type={t.item()}"
-
-
-from yaml_bert.dataset import collate_fn
-
-
-def test_collate_fn_padding():
-    item1 = {
-        "token_ids": torch.tensor([1, 2, 3], dtype=torch.long),
-        "node_types": torch.tensor([0, 1, 0], dtype=torch.long),
-        "depths": torch.tensor([0, 0, 1], dtype=torch.long),
-        "sibling_indices": torch.tensor([0, 0, 0], dtype=torch.long),
-        "parent_key_ids": torch.tensor([1, 1, 2], dtype=torch.long),
-        "labels": torch.tensor([-100, 5, -100], dtype=torch.long),
-    }
-    item2 = {
-        "token_ids": torch.tensor([4, 5], dtype=torch.long),
-        "node_types": torch.tensor([0, 1], dtype=torch.long),
-        "depths": torch.tensor([0, 0], dtype=torch.long),
-        "sibling_indices": torch.tensor([0, 0], dtype=torch.long),
-        "parent_key_ids": torch.tensor([1, 1], dtype=torch.long),
-        "labels": torch.tensor([6, -100], dtype=torch.long),
-    }
-
-    batch = collate_fn([item1, item2])
-
-    assert batch["token_ids"].shape == (2, 3)
-    assert batch["padding_mask"].shape == (2, 3)
-
-    assert batch["padding_mask"][0].tolist() == [False, False, False]
-    assert batch["padding_mask"][1].tolist() == [False, False, True]
-
-    assert batch["token_ids"][1, 2].item() == 0
-    assert batch["labels"][1, 2].item() == -100
-
-
-def test_dataset_includes_kind_ids():
-    vocab = _build_vocab()
-    dataset = YamlDataset(
-        yaml_dir=TEMPLATES_DIR,
-        vocab=vocab,
-        linearizer=YamlLinearizer(),
-        annotator=DomainAnnotator(),
-    )
-    item = dataset[0]
-
-    assert "kind_ids" in item
-    kind_ids = item["kind_ids"]
-    assert kind_ids.shape == item["token_ids"].shape
-    # All kind_ids should be the same within a document
-    assert (kind_ids == kind_ids[0]).all()
-
-
-def test_collate_fn_pads_kind_ids():
-    item1 = {
-        "token_ids": torch.tensor([1, 2, 3], dtype=torch.long),
-        "node_types": torch.tensor([0, 1, 0], dtype=torch.long),
-        "depths": torch.tensor([0, 0, 1], dtype=torch.long),
-        "sibling_indices": torch.tensor([0, 0, 0], dtype=torch.long),
-        "parent_key_ids": torch.tensor([1, 1, 2], dtype=torch.long),
-        "labels": torch.tensor([-100, 5, -100], dtype=torch.long),
-        "kind_ids": torch.tensor([3, 3, 3], dtype=torch.long),
-    }
-    item2 = {
-        "token_ids": torch.tensor([4, 5], dtype=torch.long),
-        "node_types": torch.tensor([0, 1], dtype=torch.long),
-        "depths": torch.tensor([0, 0], dtype=torch.long),
-        "sibling_indices": torch.tensor([0, 0], dtype=torch.long),
-        "parent_key_ids": torch.tensor([1, 1], dtype=torch.long),
-        "labels": torch.tensor([6, -100], dtype=torch.long),
-        "kind_ids": torch.tensor([5, 5], dtype=torch.long),
-    }
-
-    batch = collate_fn([item1, item2])
-
-    assert "kind_ids" in batch
-    assert batch["kind_ids"].shape == (2, 3)
-    assert batch["kind_ids"][1, 2].item() == 0  # padded with 0
-
-
-def test_v4_dataset_skips_unk_targets():
-    """Lever 1: positions whose target encodes to [UNK] should never be masked.
-
-    Uses metadata.* keys (parent is a UNIVERSAL_ROOT_KEY so they route to
-    the simple_head, not the kind_head — making the test independent of
-    kind_target_vocab). Sets mask_prob=1.0 so every eligible key WOULD be
-    masked under the old code. Verifies the [UNK]-target position keeps
-    labels==-100 (skipped) while the known-target position is supervised.
+    For 'spec.containers' as a list of dicts, the linearizer assigns each
+    inner KEY a parent_path like 'spec.containers.0'. Since no node has that
+    full_path, we strip the trailing numeric segment and link to
+    'spec.containers'. All inner KEYs across all items become children of
+    the list key.
     """
-    import random
-    from yaml_bert.config import YamlBertConfig
-    from yaml_bert.dataset import YamlDataset
-    from yaml_bert.types import NodeType, YamlNode
-    from yaml_bert.vocab import Vocabulary
+    yaml_str = """\
+spec:
+  containers:
+  - name: a
+    image: x
+  - name: b
+    image: y
+"""
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
 
-    specials = {"[PAD]": 0, "[UNK]": 1, "[MASK]": 2}
-    key_vocab = {"apiVersion": 3, "kind": 4, "metadata": 5, "name": 6, "unknownkey": 7}
-    value_vocab = {"v1": 3, "Pod": 4, "app": 5, "noise": 6}
-    # ONLY 'metadata::name' is a known target. 'metadata::unknownkey' is NOT.
-    simple_target_vocab = {"apiVersion": 0, "kind": 1, "metadata": 2, "metadata::name": 3}
-    vocab = Vocabulary(
-        key_vocab=key_vocab, value_vocab=value_vocab, special_tokens=specials,
-        simple_target_vocab=simple_target_vocab, kind_target_vocab={},
+    # Find the list-key 'containers' (there should be exactly one)
+    containers_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "containers"
+    ]
+    assert len(containers_positions) == 1
+    containers_pos = containers_positions[0]
+
+    # Find each name/image position. There are two of each (item0 and item1).
+    name_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "name"
+    ]
+    image_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "image"
+    ]
+    assert len(name_positions) == 2
+    assert len(image_positions) == 2
+
+    # All 4 inner KEYs are children of containers (per-item grouping lost)
+    children = info["children_of"][containers_pos]
+    for p in name_positions + image_positions:
+        assert p in children, (
+            f"Position {p} ({nodes[p].token}, parent_path="
+            f"{nodes[p].parent_path!r}) is not a child of containers"
+        )
+        assert info["parent_of"][p] == containers_pos
+
+
+def test_compute_children_info_list_of_scalars():
+    """List of scalars (e.g., args) has no inner KEYs; should not crash.
+
+    The list values are LIST_VALUE leaves, not KEYs, so 'args' has no KEY
+    children. This must not crash and must produce a valid (empty) child list.
+    """
+    yaml_str = """\
+args:
+  - --foo
+  - --bar
+"""
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
+
+    args_positions = [
+        p for p in info["key_positions"] if nodes[p].token == "args"
+    ]
+    assert len(args_positions) == 1
+    args_pos = args_positions[0]
+
+    # args is a root KEY with no KEY children
+    assert info["parent_of"][args_pos] == -1
+    assert info["children_of"][args_pos] == []
+
+
+def test_compute_children_info_multi_root():
+    """Top-level KEYs at root depth have parent_of == -1."""
+    yaml_str = "apiVersion: v1\nkind: Pod\n"
+    nodes = YamlLinearizer().linearize(yaml_str)
+    info = compute_children_info(nodes)
+
+    by_token = {nodes[p].token: p for p in info["key_positions"]}
+    assert "apiVersion" in by_token
+    assert "kind" in by_token
+
+    assert info["parent_of"][by_token["apiVersion"]] == -1
+    assert info["parent_of"][by_token["kind"]] == -1
+
+
+def test_compute_children_info_empty_input():
+    """Empty node list returns all-empty lists without crashing."""
+    info = compute_children_info([])
+    assert info["children_of"] == []
+    assert info["parent_of"] == []
+    assert info["key_positions"] == []
+    assert info["depth_of"] == []
+    assert info["full_path_of"] == []
+
+
+def test_v8_dataset_item_keys():
+    """V8Dataset item contains the required keys."""
+    nodes_list = [
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n")
+        for _ in range(2)
+    ]
+    vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
+        [n for doc in nodes_list for n in doc], min_freq=1,
+    )
+    config = YamlBertConfig(v8_mode=True, mask_prob=1.0)  # mask all maskable for deterministic test
+    ds = V8Dataset(documents=nodes_list, vocab=vocab, config=config)
+
+    item = ds[0]
+    assert "token_ids" in item
+    assert "node_types" in item
+    assert "depths" in item
+    assert "sibling_indices" in item
+    assert "atomic_labels" in item
+    assert "children_info" in item  # dict, not tensor — collate handles
+
+
+def test_v8_collate_preserves_children_info():
+    """Collate returns batch with batched tensors and a list of children_info."""
+    nodes_list = [
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\n"),
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Service\nspec:\n  x: 1\n"),
+    ]
+    vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
+        [n for doc in nodes_list for n in doc], min_freq=1,
+    )
+    config = YamlBertConfig(v8_mode=True, mask_prob=0.5)
+    ds = V8Dataset(documents=nodes_list, vocab=vocab, config=config)
+    batch = v8_collate_fn([ds[0], ds[1]])
+    assert batch["token_ids"].dim() == 2  # (B, N)
+    assert isinstance(batch["batch_info"], list)
+    assert len(batch["batch_info"]) == 2
+    assert "children_of" in batch["batch_info"][0]
+
+
+def test_v8_collate_includes_aggregator_precompute():
+    """v8_collate_fn precomputes tensors needed by the vectorized aggregator."""
+    from yaml_bert.linearizer import YamlLinearizer
+    from yaml_bert.config import YamlBertConfig
+    from yaml_bert.vocab import VocabBuilder
+    from yaml_bert.v8_dataset import V8Dataset, v8_collate_fn
+
+    docs = [
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"),
+        YamlLinearizer().linearize("apiVersion: v1\nkind: Service\n"),
+    ]
+    vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
+    config = YamlBertConfig(v8_mode=True, mask_prob=0.0)
+    ds = V8Dataset(documents=docs, vocab=vocab, config=config)
+    batch = v8_collate_fn([ds[0], ds[1]])
+
+    # parent_of_tensor: (B, N) long, -1 sentinel for no-parent or padding
+    assert "parent_of_tensor" in batch
+    pt = batch["parent_of_tensor"]
+    assert pt.dim() == 2
+    assert pt.dtype == torch.long
+    assert pt.shape[0] == 2  # B
+    # Doc 0: "spec" at pos 0 is root → parent_of = -1
+    #        "x" at pos 1 is child of spec → parent_of points to spec's index
+    # Doc 1: "apiVersion" root → -1, "kind" root → -1
+
+    # top_level_key_mask: (B, N) bool, True at depth-0 KEY positions
+    assert "top_level_key_mask" in batch
+    tlkm = batch["top_level_key_mask"]
+    assert tlkm.dim() == 2
+    assert tlkm.dtype == torch.bool
+    assert tlkm.shape == pt.shape
+
+    # edges_by_depth: dict[int, tensor (E, 3)] of [doc_idx, child_pos, parent_pos]
+    # parents_by_depth: dict[int, tensor (P, 2)] of [doc_idx, parent_pos] with at-least-one-child
+    assert "edges_by_depth" in batch
+    assert "parents_by_depth" in batch
+    assert isinstance(batch["edges_by_depth"], dict)
+    assert isinstance(batch["parents_by_depth"], dict)
+    # Same set of depth keys in both
+    assert set(batch["edges_by_depth"].keys()) == set(batch["parents_by_depth"].keys())
+
+    # Per-depth shape check: edges has (E, 3), parents has (P, 2)
+    for d, edges in batch["edges_by_depth"].items():
+        assert edges.dim() == 2 and edges.shape[1] == 3
+        assert edges.dtype == torch.long
+    for d, parents in batch["parents_by_depth"].items():
+        assert parents.dim() == 2 and parents.shape[1] == 2
+        assert parents.dtype == torch.long
+
+    # Value-level correctness checks (catch off-by-one / wrong-axis bugs)
+    # Doc 0: "apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"
+    # Key positions for doc 0 (in linearization order): apiVersion, kind, spec, x
+    # Depth-0 keys: apiVersion, kind, spec; depth-1 key: x (child of spec)
+    info0 = batch["batch_info"][0]
+    info1 = batch["batch_info"][1]
+
+    # parent_of_tensor: every depth-0 key should have parent == -1; child x
+    # should have parent == position of "spec".
+    depth0_keys_doc0 = [kp for kp in info0["key_positions"] if info0["depth_of"][kp] == 0]
+    for kp in depth0_keys_doc0:
+        assert pt[0, kp].item() == -1, (
+            f"depth-0 key at pos {kp} should have parent -1, got {pt[0, kp].item()}"
+        )
+
+    # "x" is the depth-1 key in doc 0; its parent_of should be the position of "spec".
+    depth1_keys_doc0 = [kp for kp in info0["key_positions"] if info0["depth_of"][kp] == 1]
+    assert len(depth1_keys_doc0) == 1, (
+        f"expected one depth-1 key in doc 0 (x), got {depth1_keys_doc0}"
+    )
+    x_pos = depth1_keys_doc0[0]
+    spec_pos = next(kp for kp in info0["key_positions"]
+                    if info0["full_path_of"][kp] == "spec")
+    assert pt[0, x_pos].item() == spec_pos, (
+        f"x's parent should be spec at pos {spec_pos}, got {pt[0, x_pos].item()}"
     )
 
-    # apiVersion=v1, kind=Pod, metadata: {name: app, unknownkey: noise}
-    doc = [
-        YamlNode("apiVersion", NodeType.KEY,   depth=0, sibling_index=0, parent_path=""),
-        YamlNode("v1",         NodeType.VALUE, depth=0, sibling_index=0, parent_path="apiVersion"),
-        YamlNode("kind",       NodeType.KEY,   depth=0, sibling_index=1, parent_path=""),
-        YamlNode("Pod",        NodeType.VALUE, depth=0, sibling_index=1, parent_path="kind"),
-        YamlNode("metadata",   NodeType.KEY,   depth=0, sibling_index=2, parent_path=""),
-        YamlNode("name",       NodeType.KEY,   depth=1, sibling_index=0, parent_path="metadata"),
-        YamlNode("app",        NodeType.VALUE, depth=1, sibling_index=0, parent_path="metadata.name"),
-        YamlNode("unknownkey", NodeType.KEY,   depth=1, sibling_index=1, parent_path="metadata"),
-        YamlNode("noise",      NodeType.VALUE, depth=1, sibling_index=1, parent_path="metadata.unknownkey"),
-    ]
+    # top_level_key_mask: True count per doc must equal number of depth-0 keys.
+    expected_doc0 = len(depth0_keys_doc0)
+    expected_doc1 = sum(1 for kp in info1["key_positions"]
+                       if info1["depth_of"][kp] == 0)
+    assert tlkm[0].sum().item() == expected_doc0
+    assert tlkm[1].sum().item() == expected_doc1
 
-    config = YamlBertConfig(mask_prob=1.0, skip_unk_targets=True)
-    dataset = YamlDataset.from_cached_docs_v4([doc], vocab, config)
+    # Padding positions in parent_of_tensor must still be -1.
+    n0 = len(info0["parent_of"])
+    n1 = len(info1["parent_of"])
+    if n0 < pt.shape[1]:
+        assert (pt[0, n0:] == -1).all()
+    if n1 < pt.shape[1]:
+        assert (pt[1, n1:] == -1).all()
 
-    unk_id = vocab.special_tokens["[UNK]"]
-    name_pos = 5         # 'name' key — target 'metadata::name' (known)
-    unknown_pos = 7      # 'unknownkey' — target 'metadata::unknownkey' ([UNK])
-
-    for trial in range(20):
-        random.seed(trial)
-        item = dataset[0]
-        # [UNK]-target position should never be supervised
-        assert item["simple_labels"][unknown_pos].item() == -100, \
-            f"trial {trial}: [UNK]-target position {unknown_pos} should not be supervised"
-        assert item["kind_labels"][unknown_pos].item() == -100
-        # Known-target position should be supervised every trial (mask_prob=1.0)
-        s = item["simple_labels"][name_pos].item()
-        assert s != -100 and s != unk_id, \
-            f"trial {trial}: known-target position should be supervised; got label={s}"
-
-
-def test_v4_dataset_skip_unk_can_be_disabled():
-    """With skip_unk_targets=False, [UNK]-target positions DO get masked
-    (legacy behavior preserved for ablation comparison)."""
-    import random
-    from yaml_bert.config import YamlBertConfig
-    from yaml_bert.dataset import YamlDataset
-    from yaml_bert.types import NodeType, YamlNode
-    from yaml_bert.vocab import Vocabulary
-
-    specials = {"[PAD]": 0, "[UNK]": 1, "[MASK]": 2}
-    key_vocab = {"metadata": 3, "unknownkey": 4}
-    value_vocab = {"noise": 3}
-    simple_target_vocab = {"metadata": 0}  # 'metadata::unknownkey' NOT here
-    vocab = Vocabulary(
-        key_vocab=key_vocab, value_vocab=value_vocab, special_tokens=specials,
-        simple_target_vocab=simple_target_vocab, kind_target_vocab={},
+    # edges_by_depth at depth 0 should include the edge (doc_idx=0, child=x_pos,
+    # parent=spec_pos) — spec is at depth 0, so the edge depth (parent's depth)
+    # is 0.
+    assert 0 in batch["edges_by_depth"], "expected depth-0 edges from doc 0"
+    edges_d0 = batch["edges_by_depth"][0]
+    expected_edge = torch.tensor([0, x_pos, spec_pos], dtype=torch.long)
+    assert any(torch.equal(row, expected_edge) for row in edges_d0), (
+        f"expected edge {expected_edge.tolist()} in edges_by_depth[0]: "
+        f"{edges_d0.tolist()}"
     )
-    doc = [
-        YamlNode("metadata",   NodeType.KEY,   depth=0, sibling_index=0, parent_path=""),
-        YamlNode("unknownkey", NodeType.KEY,   depth=1, sibling_index=0, parent_path="metadata"),
-        YamlNode("noise",      NodeType.VALUE, depth=1, sibling_index=0, parent_path="metadata.unknownkey"),
-    ]
-
-    config = YamlBertConfig(mask_prob=1.0, skip_unk_targets=False)
-    dataset = YamlDataset.from_cached_docs_v4([doc], vocab, config)
-
-    unk_id = vocab.special_tokens["[UNK]"]
-    saw_unk_target = False
-    for trial in range(20):
-        random.seed(trial)
-        item = dataset[0]
-        if item["simple_labels"][1].item() == unk_id:
-            saw_unk_target = True
-            break
-    assert saw_unk_target, \
-        "With skip_unk_targets=False, [UNK]-target positions should still be supervised"
-
-
-def test_v4_dataset_hybrid_labels():
-    vocab = _build_vocab()
-    linearizer = YamlLinearizer()
-    annotator = DomainAnnotator()
-    import glob
-    docs = []
-    for path in sorted(glob.glob(os.path.join(TEMPLATES_DIR, "**", "*.yaml"), recursive=True)):
-        nodes = linearizer.linearize_file(path)
-        if nodes:
-            annotator.annotate(nodes)
-            docs.append(nodes)
-
-    dataset = YamlDataset.from_cached_docs_v4(docs, vocab)
-    item = dataset[0]
-
-    assert "simple_labels" in item
-    assert "kind_labels" in item
-    assert "parent_key_ids" not in item
-    assert "kind_ids" not in item
-    assert "labels" not in item
-
-    # Check that masked positions have label in exactly one of simple/kind
-    simple = item["simple_labels"]
-    kind = item["kind_labels"]
-    masked = (simple != -100) | (kind != -100)
-    if masked.any():
-        # No position should have both set
-        both = (simple != -100) & (kind != -100)
-        assert not both.any(), "A position has both simple and kind labels"
