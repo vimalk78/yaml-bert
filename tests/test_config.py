@@ -14,7 +14,7 @@ def test_default_config():
     assert config.lr == 1e-4
     assert config.batch_size == 32
     assert config.num_epochs == 30
-    assert config.max_seq_len == 512
+    assert config.max_seq_len == 768
 
 
 def test_custom_config():
