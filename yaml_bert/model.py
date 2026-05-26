@@ -84,6 +84,8 @@ class YamlBertModel(nn.Module):
         batch_info: list[dict],
         padding_mask: torch.Tensor | None = None,
         *,
+        logical_ids: torch.Tensor,
+        n_logical_per_doc: torch.Tensor,
         parent_of_tensor: torch.Tensor | None = None,
         top_level_key_mask: torch.Tensor | None = None,
         edges_by_depth: dict[int, torch.Tensor] | None = None,
@@ -93,14 +95,21 @@ class YamlBertModel(nn.Module):
     ) -> tuple:
         """Returns (logits, doc_vec) or (logits, doc_vec, recon_logits).
 
-        recon_logits only returned when subtree_roots_flat is provided AND
-        has at least one row."""
+        v9: token_ids/node_types/depths/sibling_indices/logical_ids/padding_mask
+        are SUBWORD-level (B, N_sub). atomic_labels and the aggregator output
+        are LOGICAL-level (B, L_max). The Token Head consumes per-logical-node
+        pooled hidden state.
+        """
+        from yaml_bert.aggregator import _pool_subwords
+
         x = self.embedding(token_ids, node_types, depths, sibling_indices)
         x = self.encoder(x, src_key_padding_mask=padding_mask)
 
-        # Aggregator: forwards through to its own vectorized/reference dispatch.
+        # Aggregator pools internally; (subtree_vecs, doc_vec) are logical-level.
         subtree_vecs, doc_vec = self.aggregator(
             x, batch_info,
+            logical_ids=logical_ids,
+            n_logical_per_doc=n_logical_per_doc,
             parent_of_tensor=parent_of_tensor,
             top_level_key_mask=top_level_key_mask,
             edges_by_depth=edges_by_depth,
@@ -108,51 +117,60 @@ class YamlBertModel(nn.Module):
             subtree_mask=subtree_mask,
         )
 
-        b, n, d = x.shape
+        # Re-pool subword hiddens to logical level for the Token Head input.
+        # (One extra index_add call; the plan flags this as a follow-up.)
+        h_logical = _pool_subwords(x, logical_ids, n_logical_per_doc)
+        b, L_max, d = h_logical.shape
 
         if parent_of_tensor is not None:
-            # Vectorized s_parent. parent_of_tensor being set implies all four
-            # precompute kwargs were provided (aggregator enforces all-or-none).
-            safe_parent = parent_of_tensor.clamp(min=0)  # (B, N)
+            safe_parent = parent_of_tensor.clamp(min=0)
             s_parent = torch.gather(
                 subtree_vecs, dim=1,
                 index=safe_parent.unsqueeze(-1).expand(-1, -1, d),
-            )  # (B, N, d)
-            no_parent_mask = (parent_of_tensor == -1).unsqueeze(-1)  # (B, N, 1)
+            )
+            no_parent_mask = (parent_of_tensor == -1).unsqueeze(-1)
             s_parent = torch.where(
                 no_parent_mask, doc_vec.unsqueeze(1), s_parent,
             )
         else:
-            # Reference path: per-doc Python loop (kept for tests / fallback).
-            s_parent = torch.zeros_like(x)
+            s_parent = torch.zeros_like(h_logical)
             for doc_idx in range(b):
                 parent_of = batch_info[doc_idx]["parent_of"]
-                for i in range(min(n, len(parent_of))):
+                for i in range(min(L_max, len(parent_of))):
                     p = parent_of[i]
                     if p >= 0:
                         s_parent[doc_idx, i] = subtree_vecs[doc_idx, p]
                     else:
                         s_parent[doc_idx, i] = doc_vec[doc_idx]
 
-        doc_vec_broadcast = doc_vec.unsqueeze(1).expand(b, n, d)
-        head_input = torch.cat([x, doc_vec_broadcast, s_parent], dim=-1)
-        logits = self.token_head(head_input)
+        doc_vec_broadcast = doc_vec.unsqueeze(1).expand(b, L_max, d)
+        head_input = torch.cat([h_logical, doc_vec_broadcast, s_parent], dim=-1)
+        logits = self.token_head(head_input)  # (B, L_max, atomic_vocab_size)
 
-        # Reconstruction path: only if caller provided subtree roots
         if subtree_roots_flat is not None and subtree_roots_flat.size(0) > 0:
-            # subtree_roots_flat: (M, 2) of [batch_idx, root_pos]
-            batch_idx_per_root = subtree_roots_flat[:, 0]   # (M,)
-            root_pos_per_root = subtree_roots_flat[:, 1]    # (M,)
+            batch_idx_per_root = subtree_roots_flat[:, 0]
+            root_pos_per_root = subtree_roots_flat[:, 1]
+            doc_vec_per_root = doc_vec[batch_idx_per_root]
+            # Root positions live in LOGICAL coords. Look up depth from batch_info;
+            # sibling: find any subword with logical_id == root_pos, use its sibling.
+            root_depths_list = [
+                batch_info[bi]["depth_of"][rp]
+                for bi, rp in zip(batch_idx_per_root.tolist(), root_pos_per_root.tolist())
+            ]
+            root_siblings_list = []
+            for bi, rp in zip(batch_idx_per_root.tolist(), root_pos_per_root.tolist()):
+                positions = (logical_ids[bi] == rp).nonzero(as_tuple=True)[0]
+                if len(positions) > 0:
+                    root_siblings_list.append(int(sibling_indices[bi, positions[0]].item()))
+                else:
+                    # Shouldn't happen: a recon root must have at least one subword.
+                    root_siblings_list.append(0)
+            root_depths = torch.tensor(root_depths_list, device=depths.device, dtype=torch.long)
+            root_siblings = torch.tensor(root_siblings_list, device=depths.device, dtype=torch.long)
 
-            doc_vec_per_root = doc_vec[batch_idx_per_root]  # (M, d_model)
-
-            # Build pos_emb_per_root from the same depth/sibling embedding params
-            # already used in the embedding layer — no new parameters introduced.
-            root_depths = depths[batch_idx_per_root, root_pos_per_root]     # (M,)
-            root_siblings = sibling_indices[batch_idx_per_root, root_pos_per_root]  # (M,)
-            depth_e = self.embedding.depth_embedding(root_depths)            # (M, d_model)
-            sibling_e = self.embedding.sibling_embedding(root_siblings)      # (M, d_model)
-            pos_emb_per_root = torch.cat([depth_e, sibling_e], dim=-1)      # (M, 2*d_model)
+            depth_e = self.embedding.depth_embedding(root_depths)
+            sibling_e = self.embedding.sibling_embedding(root_siblings)
+            pos_emb_per_root = torch.cat([depth_e, sibling_e], dim=-1)
 
             recon_logits = self.recon_head(doc_vec_per_root, pos_emb_per_root)
             return logits, doc_vec, recon_logits

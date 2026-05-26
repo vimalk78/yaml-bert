@@ -1,16 +1,28 @@
 """Integration test: YamlBertDataset emits subtree-masking outputs; collate_fn batches them."""
+import os
 import torch
+import pytest
 
 from yaml_bert.linearizer import YamlLinearizer
 from yaml_bert.config import YamlBertConfig
-from yaml_bert.vocab import VocabBuilder
+from yaml_bert.vocab import Vocabulary, VocabBuilder
 from yaml_bert.dataset import YamlBertDataset, collate_fn
+
+_TOKENIZER_PATH = "output_v8_276K_recon_seed42/unified_bpe_8k.json"
+
+
+def _skip_if_no_tokenizer():
+    if not os.path.exists(_TOKENIZER_PATH):
+        pytest.skip(f"tokenizer not found: {_TOKENIZER_PATH}")
 
 
 def _build_dataset_and_vocab(yamls: list[str], recon_enabled: bool):
+    _skip_if_no_tokenizer()
     docs = [YamlLinearizer().linearize(y) for y in yamls]
-    flat = [n for d in docs for n in d]
-    vocab = VocabBuilder().build(flat, min_freq=1)
+    vocab = Vocabulary.from_tokenizer_path(
+        tokenizer_path=_TOKENIZER_PATH,
+        atomic_target_vocab=VocabBuilder.build_atomic_target_vocab(docs, min_freq=1),
+    )
     config = YamlBertConfig(mask_prob=0.0,
                             recon_enabled=recon_enabled)
     return YamlBertDataset(docs, vocab, config), vocab
@@ -30,7 +42,8 @@ def test_dataset_item_includes_subtree_fields_when_recon_enabled():
 
     assert "subtree_mask" in item
     assert item["subtree_mask"].dtype == torch.bool
-    assert item["subtree_mask"].shape[0] == item["token_ids"].shape[0]
+    # v9: subtree_mask is LOGICAL-level (length = n_logical, not n_subword)
+    assert item["subtree_mask"].shape[0] == item["n_logical"]
 
     assert "subtree_roots" in item
     assert isinstance(item["subtree_roots"], list)
@@ -56,10 +69,10 @@ def test_dataset_item_omits_subtree_fields_when_recon_disabled():
 
 
 def test_collate_batches_subtree_fields_when_present():
-    """collate_fn batches per-item subtree fields into (B,N) + flat (M,*).
+    """collate_fn batches per-item subtree fields into (B,L_max) + flat (M,*).
 
-    Structural assertions hold regardless of whether any subtrees were picked
-    (pick_subtrees returns [] when no candidates pass the size cap).
+    v9: subtree_mask is LOGICAL-level (B, L_max), not (B, N_sub).
+    Structural assertions hold regardless of whether any subtrees were picked.
     """
     yamls = [
         "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: a\n"
@@ -71,7 +84,7 @@ def test_collate_batches_subtree_fields_when_present():
     batch = collate_fn([ds[0], ds[1]])
 
     assert "subtree_mask" in batch
-    assert batch["subtree_mask"].dim() == 2  # (B, N)
+    assert batch["subtree_mask"].dim() == 2  # (B, L_max)
     assert batch["subtree_mask"].shape[0] == 2
     assert batch["subtree_mask"].dtype == torch.bool
 
