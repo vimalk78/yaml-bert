@@ -1,3 +1,4 @@
 torch>=2.0
 pyyaml>=6.0
 plotly>=5.18
+scikit-learn>=1.4
