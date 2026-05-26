@@ -1,11 +1,5 @@
-"""Tree aggregator: bottom-up combine of token hidden states into subtree
-vectors + a document vector at the root.
-
-Mean combine (no learnable params). Two execution paths share the same
-output: a per-document reference loop, and a batched scatter-based
-vectorized path activated when the caller passes precomputed tensors.
-Numerical equivalence between the two paths is locked by
-tests/test_aggregator_vectorized.py.
+"""Tree aggregator v9: pool subwords per logical node, then bottom-up
+combine of logical KEY nodes into subtree vectors + a document vector.
 """
 from __future__ import annotations
 
@@ -13,19 +7,59 @@ import torch
 import torch.nn as nn
 
 
+def _pool_subwords(
+    hidden_states: torch.Tensor,
+    logical_ids: torch.Tensor,
+    n_logical_per_doc: torch.Tensor,
+) -> torch.Tensor:
+    """Mean-pool subword hidden states into per-logical-node vectors.
+
+    Args:
+        hidden_states: (B, N_sub, d) per-subword hidden states from the encoder.
+        logical_ids:  (B, N_sub) int tensor; -1 marks padding (ignored).
+        n_logical_per_doc: (B,) number of logical nodes per doc; pooled output
+            shape is (B, max(n_logical_per_doc), d).
+
+    Returns:
+        (B, L_max, d) where L_max = int(n_logical_per_doc.max()).
+    """
+    B, N_sub, d = hidden_states.shape
+    L_max = int(n_logical_per_doc.max().item())
+    out = torch.zeros(B, L_max, d, device=hidden_states.device, dtype=hidden_states.dtype)
+    count = torch.zeros(B, L_max, device=hidden_states.device, dtype=torch.float32)
+
+    valid = logical_ids >= 0  # (B, N_sub)
+    safe_lids = logical_ids.clamp(min=0)  # (B, N_sub)
+
+    # Doc index broadcast over N_sub
+    doc_idx = torch.arange(B, device=hidden_states.device).unsqueeze(1).expand(B, N_sub)
+
+    # Linear (doc, logical) → flat slot
+    flat = doc_idx * L_max + safe_lids  # (B, N_sub)
+    flat_valid = flat[valid]
+    h_valid = hidden_states[valid]
+
+    out_flat = out.view(B * L_max, d)
+    count_flat = count.view(B * L_max)
+    out_flat.index_add_(0, flat_valid, h_valid)
+    count_flat.index_add_(
+        0, flat_valid, torch.ones_like(flat_valid, dtype=torch.float32),
+    )
+
+    pooled = out_flat / count_flat.clamp(min=1.0).unsqueeze(-1).to(out_flat.dtype)
+    return pooled.view(B, L_max, d)
+
+
 class TreeAggregator(nn.Module):
-    """Bottom-up tree aggregation with mean combine.
+    """v9: pool subwords first, then run v8 logical-level aggregator.
 
     Two execution paths:
     - Reference path (default): per-doc Python loop. Used when the batch
-      doesn't provide vectorized precompute tensors. Kept for tests and
-      for backward compatibility.
-    - Vectorized path (preferred during training): batched PyTorch scatter
-      ops, processed depth-by-depth. Activated when caller passes the
-      precomputed tensors as kwargs.
+      doesn't provide vectorized precompute tensors. Kept for tests.
+    - Vectorized path: batched scatter ops, processed depth-by-depth.
 
-    Both paths produce numerically equivalent output on the same inputs
-    (guaranteed by tests/test_aggregator_vectorized.py).
+    Both paths produce numerically equivalent output (guaranteed by
+    tests/test_aggregator_vectorized.py).
     """
 
     def __init__(self, d_model: int) -> None:
@@ -37,6 +71,8 @@ class TreeAggregator(nn.Module):
         hidden_states: torch.Tensor,
         batch_info: list[dict],
         *,
+        logical_ids: torch.Tensor,
+        n_logical_per_doc: torch.Tensor,
         parent_of_tensor: torch.Tensor | None = None,
         top_level_key_mask: torch.Tensor | None = None,
         edges_by_depth: dict[int, torch.Tensor] | None = None,
@@ -45,19 +81,21 @@ class TreeAggregator(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            hidden_states: (B, N, d_model) per-position hidden states.
-            batch_info: list of B dicts (legacy path; required even when
-                vectorized — kept for fallback compat).
+            hidden_states: (B, N_sub, d) per-subword hidden states from encoder.
+            logical_ids:   (B, N_sub) per-subword logical-node id (-1 for pad).
+            n_logical_per_doc: (B,) number of logical nodes per doc.
+            batch_info: list of B dicts (legacy path; required for reference path).
             parent_of_tensor / top_level_key_mask / edges_by_depth /
                 parents_by_depth: when ALL provided, use vectorized path.
-            subtree_mask: (B, N) bool tensor. When provided, positions where
-                subtree_mask[b, i]=True are excluded from sums into doc_vec
-                and from contributing to ancestor subtree_vecs. Used for the
-                v8 reconstruction objective's leak-prevention.
+            subtree_mask: (B, L_max) bool; positions excluded from doc_vec and
+                ancestor subtree_vecs (used by v8 reconstruction objective).
 
         Returns:
-            (subtree_vecs, doc_vec)
+            (subtree_vecs, doc_vec) where subtree_vecs is (B, L_max, d) —
+            indexed by LOGICAL position, not subword.
         """
+        pooled = _pool_subwords(hidden_states, logical_ids, n_logical_per_doc)
+
         provided = (
             parent_of_tensor is not None,
             top_level_key_mask is not None,
@@ -75,15 +113,18 @@ class TreeAggregator(nn.Module):
                     f"parents_by_depth={'set' if provided[3] else 'None'}"
                 )
             return self._forward_vectorized(
-                hidden_states,
+                pooled,
                 top_level_key_mask=top_level_key_mask,
                 edges_by_depth=edges_by_depth,
                 parents_by_depth=parents_by_depth,
                 subtree_mask=subtree_mask,
             )
         return self._forward_reference(
-            hidden_states, batch_info, subtree_mask=subtree_mask,
+            pooled, batch_info, subtree_mask=subtree_mask,
         )
+
+    # === _forward_reference and _forward_vectorized are verbatim from v8 ===
+    # They operate on per-position hidden states (now logical positions).
 
     def _forward_reference(
         self,

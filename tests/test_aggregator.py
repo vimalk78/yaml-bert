@@ -28,7 +28,10 @@ def test_aggregator_output_shapes():
         children_of=[[1, 2], [], []],  # 0 has children 1,2; 1 and 2 are leaves
         depths=[0, 1, 1, 1, 1],
     )]
-    subtree_vecs, doc_vec = agg(hidden, info)
+    B = 1
+    logical_ids = torch.arange(n).unsqueeze(0).expand(B, n)
+    n_logical_per_doc = torch.tensor([n] * B)
+    subtree_vecs, doc_vec = agg(hidden, info, logical_ids=logical_ids, n_logical_per_doc=n_logical_per_doc)
     assert subtree_vecs.shape == (1, n, d_model)
     assert doc_vec.shape == (1, d_model)
 
@@ -48,7 +51,10 @@ def test_aggregator_leaf_key_uses_self_hidden():
         children_of=[[]],
         depths=[0, 0],
     )]
-    subtree_vecs, _ = agg(hidden, info)
+    B, n = 1, 2
+    logical_ids = torch.arange(n).unsqueeze(0).expand(B, n)
+    n_logical_per_doc = torch.tensor([n] * B)
+    subtree_vecs, _ = agg(hidden, info, logical_ids=logical_ids, n_logical_per_doc=n_logical_per_doc)
     # leaf key: subtree_vec = mean of [self] = self
     assert torch.allclose(subtree_vecs[0, 0], hidden[0, 0])
 
@@ -68,7 +74,10 @@ def test_aggregator_internal_node_means_children_and_self():
         children_of=[[1, 2], [], []],
         depths=[0, 1, 1],
     )]
-    subtree_vecs, doc_vec = agg(hidden, info)
+    B, n = 1, 3
+    logical_ids = torch.arange(n).unsqueeze(0).expand(B, n)
+    n_logical_per_doc = torch.tensor([n] * B)
+    subtree_vecs, doc_vec = agg(hidden, info, logical_ids=logical_ids, n_logical_per_doc=n_logical_per_doc)
     # Leaf keys: subtree = self
     # Root: subtree = mean(self=0, child1_subtree=[4,4], child2_subtree=[8,8])
     #             = mean([0,0], [4,4], [8,8]) = [4,4]
