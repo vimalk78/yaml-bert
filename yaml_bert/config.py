@@ -31,7 +31,7 @@ class YamlBertConfig:
     lr: float = 1e-4
     batch_size: int = 32
     num_epochs: int = 30
-    max_seq_len: int = 512
+    max_seq_len: int = 768  # was 512 in v8; v9 BPE-expands sequences ~2.3x
 
     # Reconstruction objective (subtree masking + bag-of-keys prediction)
     recon_enabled: bool = False

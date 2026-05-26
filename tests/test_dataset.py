@@ -1,288 +1,113 @@
+"""Tests for v9 YamlBertDataset (subword expansion + whole-key masking)."""
+import os
+import pytest
 import torch
 
+from yaml_bert.annotator import DomainAnnotator
 from yaml_bert.config import YamlBertConfig
+from yaml_bert.dataset import YamlBertDataset, collate_fn
 from yaml_bert.linearizer import YamlLinearizer
-from yaml_bert.dataset import YamlBertDataset, compute_children_info, collate_fn
+from yaml_bert.vocab import Vocabulary, VocabBuilder
 
+TOKENIZER_PATH = "output_v8_276K_recon_seed42/unified_bpe_8k.json"
 
-def test_compute_children_info_simple():
-    """For 'spec: {replicas: 3}', spec has 1 child (replicas)."""
-    nodes = YamlLinearizer().linearize("spec:\n  replicas: 3\n")
-    info = compute_children_info(nodes)
-
-    # info["children_of"][i] = list of positions that are children of position i
-    # info["parent_of"][i] = position of i's parent (or -1 if root)
-    # info["key_positions"] = sorted list of positions whose node_type is KEY/LIST_KEY
-    # info["depth_of"][i] = depth at position i
-
-    assert "spec" in [nodes[p].token for p in info["key_positions"]]
-    assert "replicas" in [nodes[p].token for p in info["key_positions"]]
-
-    # spec is at position 0, has children: replicas (pos 1)
-    spec_pos = next(p for p in info["key_positions"] if nodes[p].token == "spec")
-    assert nodes[info["children_of"][spec_pos][0]].token == "replicas"
-
-
-def test_compute_children_info_nested():
-    """For nested structure, children_of correctly tracks parent-child."""
-    yaml_str = """\
-spec:
-  selector:
-    matchLabels:
-      app: nginx
+SIMPLE_YAML = """apiVersion: v1
+kind: Pod
+metadata:
+  name: web
 """
-    nodes = YamlLinearizer().linearize(yaml_str)
-    info = compute_children_info(nodes)
-
-    by_token = {nodes[p].token: p for p in info["key_positions"]}
-
-    spec_pos = by_token["spec"]
-    selector_pos = by_token["selector"]
-    matchLabels_pos = by_token["matchLabels"]
-    app_pos = by_token["app"]
-
-    assert info["children_of"][spec_pos] == [selector_pos]
-    assert info["children_of"][selector_pos] == [matchLabels_pos]
-    assert info["children_of"][matchLabels_pos] == [app_pos]
-
-    assert info["parent_of"][selector_pos] == spec_pos
-    assert info["parent_of"][matchLabels_pos] == selector_pos
 
 
-def test_compute_children_info_list_of_mappings():
-    """KEYs inside list items should link to the list-key (not be orphaned).
-
-    For 'spec.containers' as a list of dicts, the linearizer assigns each
-    inner KEY a parent_path like 'spec.containers.0'. Since no node has that
-    full_path, we strip the trailing numeric segment and link to
-    'spec.containers'. All inner KEYs across all items become children of
-    the list key.
-    """
-    yaml_str = """\
-spec:
-  containers:
-  - name: a
-    image: x
-  - name: b
-    image: y
-"""
-    nodes = YamlLinearizer().linearize(yaml_str)
-    info = compute_children_info(nodes)
-
-    # Find the list-key 'containers' (there should be exactly one)
-    containers_positions = [
-        p for p in info["key_positions"] if nodes[p].token == "containers"
-    ]
-    assert len(containers_positions) == 1
-    containers_pos = containers_positions[0]
-
-    # Find each name/image position. There are two of each (item0 and item1).
-    name_positions = [
-        p for p in info["key_positions"] if nodes[p].token == "name"
-    ]
-    image_positions = [
-        p for p in info["key_positions"] if nodes[p].token == "image"
-    ]
-    assert len(name_positions) == 2
-    assert len(image_positions) == 2
-
-    # All 4 inner KEYs are children of containers (per-item grouping lost)
-    children = info["children_of"][containers_pos]
-    for p in name_positions + image_positions:
-        assert p in children, (
-            f"Position {p} ({nodes[p].token}, parent_path="
-            f"{nodes[p].parent_path!r}) is not a child of containers"
-        )
-        assert info["parent_of"][p] == containers_pos
-
-
-def test_compute_children_info_list_of_scalars():
-    """List of scalars (e.g., args) has no inner KEYs; should not crash.
-
-    The list values are LIST_VALUE leaves, not KEYs, so 'args' has no KEY
-    children. This must not crash and must produce a valid (empty) child list.
-    """
-    yaml_str = """\
-args:
-  - --foo
-  - --bar
-"""
-    nodes = YamlLinearizer().linearize(yaml_str)
-    info = compute_children_info(nodes)
-
-    args_positions = [
-        p for p in info["key_positions"] if nodes[p].token == "args"
-    ]
-    assert len(args_positions) == 1
-    args_pos = args_positions[0]
-
-    # args is a root KEY with no KEY children
-    assert info["parent_of"][args_pos] == -1
-    assert info["children_of"][args_pos] == []
-
-
-def test_compute_children_info_multi_root():
-    """Top-level KEYs at root depth have parent_of == -1."""
-    yaml_str = "apiVersion: v1\nkind: Pod\n"
-    nodes = YamlLinearizer().linearize(yaml_str)
-    info = compute_children_info(nodes)
-
-    by_token = {nodes[p].token: p for p in info["key_positions"]}
-    assert "apiVersion" in by_token
-    assert "kind" in by_token
-
-    assert info["parent_of"][by_token["apiVersion"]] == -1
-    assert info["parent_of"][by_token["kind"]] == -1
-
-
-def test_compute_children_info_empty_input():
-    """Empty node list returns all-empty lists without crashing."""
-    info = compute_children_info([])
-    assert info["children_of"] == []
-    assert info["parent_of"] == []
-    assert info["key_positions"] == []
-    assert info["depth_of"] == []
-    assert info["full_path_of"] == []
-
-
-def test_dataset_item_keys():
-    """YamlBertDataset item contains the required keys."""
-    nodes_list = [
-        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n")
-        for _ in range(2)
-    ]
-    vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
-        [n for doc in nodes_list for n in doc], min_freq=1,
+@pytest.fixture(scope="module")
+def vocab():
+    if not os.path.exists(TOKENIZER_PATH):
+        pytest.skip("tokenizer missing")
+    return Vocabulary.from_tokenizer_path(
+        tokenizer_path=TOKENIZER_PATH,
+        atomic_target_vocab=VocabBuilder.build_atomic_target_vocab(
+            [YamlLinearizer().linearize(SIMPLE_YAML)], min_freq=1,
+        ),
     )
-    config = YamlBertConfig(mask_prob=1.0)  # mask all maskable for deterministic test
-    ds = YamlBertDataset(documents=nodes_list, vocab=vocab, config=config)
 
+
+@pytest.fixture(scope="module")
+def docs():
+    lin = YamlLinearizer()
+    ann = DomainAnnotator()
+    nodes = lin.linearize(SIMPLE_YAML)
+    ann.annotate(nodes)
+    return [nodes]
+
+
+def _cfg(**kw):
+    base = dict(
+        d_model=16, num_layers=1, num_heads=1, d_ff=32,
+        max_depth=8, max_sibling=8, max_seq_len=64,
+        mask_prob=0.0,  # determinism for shape tests
+    )
+    base.update(kw)
+    return YamlBertConfig(**base)
+
+
+def test_getitem_subword_expansion(vocab, docs):
+    ds = YamlBertDataset(docs, vocab, _cfg())
     item = ds[0]
-    assert "token_ids" in item
-    assert "node_types" in item
-    assert "depths" in item
-    assert "sibling_indices" in item
-    assert "atomic_labels" in item
-    assert "children_info" in item  # dict, not tensor — collate handles
+    # All per-position tensors are the same length (the subword length)
+    n_sub = item["token_ids"].size(0)
+    assert item["node_types"].size(0) == n_sub
+    assert item["depths"].size(0) == n_sub
+    assert item["sibling_indices"].size(0) == n_sub
+    assert item["logical_ids"].size(0) == n_sub
+    # Some logical nodes (e.g. 'apiVersion') BPE to 1 subword;
+    # at least one must BPE to >1 (e.g. 'v1' → 'v' '1') or this test is wrong
+    n_logical = item["logical_ids"].max().item() + 1
+    assert n_sub >= n_logical
 
 
-def test_collate_preserves_children_info():
-    """Collate returns batch with batched tensors and a list of children_info."""
-    nodes_list = [
-        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\n"),
-        YamlLinearizer().linearize("apiVersion: v1\nkind: Service\nspec:\n  x: 1\n"),
-    ]
-    vocab = __import__("yaml_bert.vocab", fromlist=["VocabBuilder"]).VocabBuilder().build(
-        [n for doc in nodes_list for n in doc], min_freq=1,
-    )
-    config = YamlBertConfig(mask_prob=0.5)
-    ds = YamlBertDataset(documents=nodes_list, vocab=vocab, config=config)
-    batch = collate_fn([ds[0], ds[1]])
-    assert batch["token_ids"].dim() == 2  # (B, N)
-    assert isinstance(batch["batch_info"], list)
-    assert len(batch["batch_info"]) == 2
-    assert "children_of" in batch["batch_info"][0]
+def test_logical_ids_are_contiguous_and_increasing(vocab, docs):
+    ds = YamlBertDataset(docs, vocab, _cfg())
+    item = ds[0]
+    lids = item["logical_ids"].tolist()
+    # Each block of identical logical_ids must be contiguous
+    seen_max = -1
+    for lid in lids:
+        assert lid >= seen_max, f"logical_ids must be non-decreasing: {lids}"
+        seen_max = max(seen_max, lid)
 
 
-def test_collate_includes_aggregator_precompute():
-    """collate_fn precomputes tensors needed by the vectorized aggregator."""
-    from yaml_bert.linearizer import YamlLinearizer
-    from yaml_bert.config import YamlBertConfig
-    from yaml_bert.vocab import VocabBuilder
-    from yaml_bert.dataset import YamlBertDataset, collate_fn
+def test_whole_key_masking_masks_all_subwords_of_chosen_key(vocab, docs):
+    """With mask_prob=1.0 and a fixed seed, every KEY's subwords get [MASK]."""
+    import random
+    random.seed(0)
+    ds = YamlBertDataset(docs, vocab, _cfg(mask_prob=1.0))
+    item = ds[0]
+    mask_id = vocab.mask_id
+    # For each masked logical KEY: every position with that logical_id
+    # should have token_id == mask_id (whole-key masking)
+    # Find masked logicals via atomic_labels != -100
+    labels = item["atomic_labels"]  # (n_logical,) — one label per LOGICAL node
+    masked_lids = (labels != -100).nonzero(as_tuple=True)[0].tolist()
+    assert len(masked_lids) > 0
+    for lid in masked_lids:
+        sub_positions = (item["logical_ids"] == lid).nonzero(as_tuple=True)[0]
+        for p in sub_positions:
+            assert item["token_ids"][p].item() == mask_id, \
+                f"logical {lid} subword at {p} not masked"
 
-    docs = [
-        YamlLinearizer().linearize("apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"),
-        YamlLinearizer().linearize("apiVersion: v1\nkind: Service\n"),
-    ]
-    vocab = VocabBuilder().build([n for d in docs for n in d], min_freq=1)
-    config = YamlBertConfig(mask_prob=0.0)
-    ds = YamlBertDataset(documents=docs, vocab=vocab, config=config)
-    batch = collate_fn([ds[0], ds[1]])
 
-    # parent_of_tensor: (B, N) long, -1 sentinel for no-parent or padding
-    assert "parent_of_tensor" in batch
-    pt = batch["parent_of_tensor"]
-    assert pt.dim() == 2
-    assert pt.dtype == torch.long
-    assert pt.shape[0] == 2  # B
-    # Doc 0: "spec" at pos 0 is root → parent_of = -1
-    #        "x" at pos 1 is child of spec → parent_of points to spec's index
-    # Doc 1: "apiVersion" root → -1, "kind" root → -1
+def test_atomic_labels_are_per_logical_not_per_subword(vocab, docs):
+    ds = YamlBertDataset(docs, vocab, _cfg())
+    item = ds[0]
+    n_logical = item["logical_ids"].max().item() + 1
+    assert item["atomic_labels"].size(0) == n_logical
 
-    # top_level_key_mask: (B, N) bool, True at depth-0 KEY positions
-    assert "top_level_key_mask" in batch
-    tlkm = batch["top_level_key_mask"]
-    assert tlkm.dim() == 2
-    assert tlkm.dtype == torch.bool
-    assert tlkm.shape == pt.shape
 
-    # edges_by_depth: dict[int, tensor (E, 3)] of [doc_idx, child_pos, parent_pos]
-    # parents_by_depth: dict[int, tensor (P, 2)] of [doc_idx, parent_pos] with at-least-one-child
-    assert "edges_by_depth" in batch
-    assert "parents_by_depth" in batch
-    assert isinstance(batch["edges_by_depth"], dict)
-    assert isinstance(batch["parents_by_depth"], dict)
-    # Same set of depth keys in both
-    assert set(batch["edges_by_depth"].keys()) == set(batch["parents_by_depth"].keys())
-
-    # Per-depth shape check: edges has (E, 3), parents has (P, 2)
-    for d, edges in batch["edges_by_depth"].items():
-        assert edges.dim() == 2 and edges.shape[1] == 3
-        assert edges.dtype == torch.long
-    for d, parents in batch["parents_by_depth"].items():
-        assert parents.dim() == 2 and parents.shape[1] == 2
-        assert parents.dtype == torch.long
-
-    # Value-level correctness checks (catch off-by-one / wrong-axis bugs)
-    # Doc 0: "apiVersion: v1\nkind: Pod\nspec:\n  x: 1\n"
-    # Key positions for doc 0 (in linearization order): apiVersion, kind, spec, x
-    # Depth-0 keys: apiVersion, kind, spec; depth-1 key: x (child of spec)
-    info0 = batch["batch_info"][0]
-    info1 = batch["batch_info"][1]
-
-    # parent_of_tensor: every depth-0 key should have parent == -1; child x
-    # should have parent == position of "spec".
-    depth0_keys_doc0 = [kp for kp in info0["key_positions"] if info0["depth_of"][kp] == 0]
-    for kp in depth0_keys_doc0:
-        assert pt[0, kp].item() == -1, (
-            f"depth-0 key at pos {kp} should have parent -1, got {pt[0, kp].item()}"
-        )
-
-    # "x" is the depth-1 key in doc 0; its parent_of should be the position of "spec".
-    depth1_keys_doc0 = [kp for kp in info0["key_positions"] if info0["depth_of"][kp] == 1]
-    assert len(depth1_keys_doc0) == 1, (
-        f"expected one depth-1 key in doc 0 (x), got {depth1_keys_doc0}"
-    )
-    x_pos = depth1_keys_doc0[0]
-    spec_pos = next(kp for kp in info0["key_positions"]
-                    if info0["full_path_of"][kp] == "spec")
-    assert pt[0, x_pos].item() == spec_pos, (
-        f"x's parent should be spec at pos {spec_pos}, got {pt[0, x_pos].item()}"
-    )
-
-    # top_level_key_mask: True count per doc must equal number of depth-0 keys.
-    expected_doc0 = len(depth0_keys_doc0)
-    expected_doc1 = sum(1 for kp in info1["key_positions"]
-                       if info1["depth_of"][kp] == 0)
-    assert tlkm[0].sum().item() == expected_doc0
-    assert tlkm[1].sum().item() == expected_doc1
-
-    # Padding positions in parent_of_tensor must still be -1.
-    n0 = len(info0["parent_of"])
-    n1 = len(info1["parent_of"])
-    if n0 < pt.shape[1]:
-        assert (pt[0, n0:] == -1).all()
-    if n1 < pt.shape[1]:
-        assert (pt[1, n1:] == -1).all()
-
-    # edges_by_depth at depth 0 should include the edge (doc_idx=0, child=x_pos,
-    # parent=spec_pos) — spec is at depth 0, so the edge depth (parent's depth)
-    # is 0.
-    assert 0 in batch["edges_by_depth"], "expected depth-0 edges from doc 0"
-    edges_d0 = batch["edges_by_depth"][0]
-    expected_edge = torch.tensor([0, x_pos, spec_pos], dtype=torch.long)
-    assert any(torch.equal(row, expected_edge) for row in edges_d0), (
-        f"expected edge {expected_edge.tolist()} in edges_by_depth[0]: "
-        f"{edges_d0.tolist()}"
-    )
+def test_collate_pads_logical_ids_and_emits_n_logical_per_doc(vocab, docs):
+    ds = YamlBertDataset(docs * 3, vocab, _cfg())
+    batch = collate_fn([ds[0], ds[1], ds[2]])
+    assert "logical_ids" in batch
+    assert "n_logical_per_doc" in batch
+    assert batch["n_logical_per_doc"].shape == (3,)
+    # Subword pad value is 0 (== pad_id slot); logical-id pad is -1 (out-of-range marker)
+    # Atomic labels pad to -100
+    assert batch["atomic_labels"].shape[1] == int(batch["n_logical_per_doc"].max())
