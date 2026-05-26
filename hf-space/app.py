@@ -1,7 +1,7 @@
 """YAML-BERT missing-field suggester — Gradio demo.
 
 Paste a Kubernetes YAML manifest; the model identifies fields it expects
-to see but that are absent. Runs the v8 (MLM+reconstruction) checkpoint
+to see but that are absent. Runs the YAML-BERT checkpoint
 trained on full 276K K8s corpus — atomic-vocab prediction conditioned on
 doc_vec, with tree-aware bottom-up aggregation.
 
@@ -214,6 +214,81 @@ def suggest(yaml_text: str, threshold: float) -> str:
         header = f"### Document {i}: `{kind}`"
         blocks.append(header + "\n\n" + _suggest_one(doc_text, threshold))
     return "\n\n---\n\n".join(blocks)
+
+
+# ----- Manifest galaxy (precomputed UMAP of YAML-BERT doc_vecs) -----
+
+GALAXY_DATA_PATH = "galaxy_data.json"
+
+# Curated qualitative palette + a muted gray for everything outside the top kinds.
+_GALAXY_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+    "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+]
+_GALAXY_OTHER_COLOR = "#d0d0d0"
+_GALAXY_TOP_N = 15
+
+
+def _build_galaxy_figure(data_path: str):
+    """Build a Plotly scatter from the precomputed galaxy_data.json."""
+    import json
+    from collections import Counter
+    import plotly.graph_objects as go
+
+    with open(data_path) as f:
+        data = json.load(f)
+
+    kinds = data["kind"]
+    top_kinds = [k for k, _ in Counter(kinds).most_common(_GALAXY_TOP_N)]
+    top_set = set(top_kinds)
+    color_map = {k: _GALAXY_PALETTE[i % len(_GALAXY_PALETTE)]
+                 for i, k in enumerate(top_kinds)}
+
+    fig = go.Figure()
+    # "Other" first so the named kinds render on top
+    series: list[tuple[str, str, list[int]]] = []
+    other_idxs = [i for i, k in enumerate(kinds) if k not in top_set]
+    if other_idxs:
+        series.append(("Other", _GALAXY_OTHER_COLOR, other_idxs))
+    for k in top_kinds:
+        series.append((k, color_map[k], [i for i, kk in enumerate(kinds) if kk == k]))
+
+    for label, color, idxs in series:
+        if not idxs:
+            continue
+        fig.add_scattergl(
+            x=[data["x"][i] for i in idxs],
+            y=[data["y"][i] for i in idxs],
+            mode="markers",
+            name=f"{label} ({len(idxs):,})",
+            marker=dict(size=4, color=color, opacity=0.65),
+            text=[(f"<b>{kinds[i]}</b><br>"
+                   f"{data['name'][i]}<br>"
+                   f"ns: {data['namespace'][i]}") for i in idxs],
+            hovertemplate="%{text}<extra></extra>",
+        )
+
+    fig.update_layout(
+        title=(f"UMAP projection of {data['n']:,} K8s manifests "
+               f"(cosine metric)"),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False, scaleanchor="x"),
+        height=720,
+        margin=dict(l=10, r=10, t=60, b=10),
+        legend=dict(orientation="v", x=1.0, y=1.0, font=dict(size=10)),
+        plot_bgcolor="white",
+    )
+    return fig
+
+
+_log("Building manifest galaxy figure...")
+try:
+    GALAXY_FIG = _build_galaxy_figure(GALAXY_DATA_PATH)
+    _log("Galaxy figure built")
+except FileNotFoundError:
+    GALAXY_FIG = None
+    _log(f"Galaxy data not found at {GALAXY_DATA_PATH} — galaxy tab will be empty")
 
 
 # ----- UI -----
@@ -483,66 +558,98 @@ roleRef:
 """
 
 _log("Building Gradio UI...")
-with gr.Blocks(title="YAML-BERT — missing-field suggester") as demo:
+with gr.Blocks(title="YAML-BERT") as demo:
     gr.Markdown(
         f"""
-# YAML-BERT — Kubernetes missing-field suggester
-
-Paste a Kubernetes YAML manifest below. The model walks each parent level,
-identifies fields it expects to see there but that are absent, and ranks
-the suggestions by confidence.
+# YAML-BERT — structural understanding of Kubernetes YAML
 
 Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
+Trained with MLM + reconstruction on 276K K8s manifests ·
 {n_params:,} params
+
+**This Space includes 2 demos — pick a tab below, or use the tiles on the Overview tab.**
 """
     )
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            yaml_input = gr.Code(
-                language="yaml",
-                lines=22,
-                max_lines=100,        # grow up to ~100 lines, then scroll inside
-                label="YAML input",
-                value=EXAMPLE_NGINX,
+    with gr.Tabs() as tabs:
+        with gr.Tab("Overview", id="overview"):
+            gr.Markdown("### Demos in this Space")
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown(
+                        "#### 🧩 Missing-field suggester\n"
+                        "Paste a Kubernetes YAML manifest. The model walks each "
+                        "parent level, identifies fields it expects to see there "
+                        "but that are absent, and ranks the suggestions by "
+                        "confidence."
+                    )
+                    open_suggester = gr.Button(
+                        "Open missing-field suggester →", variant="primary"
+                    )
+                with gr.Column():
+                    gr.Markdown(
+                        "#### 🌌 Manifest galaxy\n"
+                        "10,000 Kubernetes manifests embedded by the model and "
+                        "projected to 2D. Watch clusters of `Deployment`, "
+                        "`Service`, `ConfigMap` etc. form spontaneously — the "
+                        "model was never told what `kind` is."
+                    )
+                    open_galaxy = gr.Button(
+                        "Open manifest galaxy →", variant="primary"
+                    )
+
+        with gr.Tab("Missing-field suggester", id="suggester"):
+            gr.Markdown(
+                "Paste a Kubernetes YAML manifest. The model walks each "
+                "parent level, identifies fields it expects to see there "
+                "but that are absent, and ranks the suggestions by confidence."
             )
-            threshold = gr.Slider(
-                minimum=0.05, maximum=0.95, value=0.1, step=0.05,
-                label="Confidence threshold",
+            with gr.Row():
+                with gr.Column(scale=1):
+                    yaml_input = gr.Code(
+                        language="yaml",
+                        lines=22,
+                        max_lines=100,
+                        label="YAML input",
+                        value=EXAMPLE_NGINX,
+                    )
+                    threshold = gr.Slider(
+                        minimum=0.05, maximum=0.95, value=0.1, step=0.05,
+                        label="Confidence threshold",
+                    )
+                    submit = gr.Button("Suggest missing fields", variant="primary")
+
+                with gr.Column(scale=1):
+                    output = gr.Markdown(label="Suggestions", value="")
+
+            submit.click(fn=suggest, inputs=[yaml_input, threshold], outputs=output)
+            # No auto-trigger on yaml_input.change — typing/pasting a long YAML
+            # would fire many inference requests and back up the queue.
+
+            _ALL_EXAMPLES = [
+                EXAMPLE_NGINX,
+                EXAMPLE_DEPLOYMENT_INCOMPLETE,
+                EXAMPLE_INCOMPLETE_SERVICE,
+                EXAMPLE_CONFIGMAP,
+                EXAMPLE_SECRET,
+                EXAMPLE_STATEFULSET,
+                EXAMPLE_CRONJOB,
+                EXAMPLE_HPA,
+                EXAMPLE_NETWORKPOLICY,
+                EXAMPLE_INGRESS,
+                EXAMPLE_POD_INIT_PROBES,
+                EXAMPLE_RBAC_MULTIDOC,
+            ]
+            gr.Examples(
+                examples=[[y] for y in _ALL_EXAMPLES],
+                example_labels=[_label_for_example(y) for y in _ALL_EXAMPLES],
+                inputs=[yaml_input],
+                examples_per_page=20,
+                label="Example YAMLs",
             )
-            submit = gr.Button("Suggest missing fields", variant="primary")
 
-        with gr.Column(scale=1):
-            output = gr.Markdown(label="Suggestions", value="")
-
-    submit.click(fn=suggest, inputs=[yaml_input, threshold], outputs=output)
-    # No auto-trigger on yaml_input.change — typing/pasting a long YAML would
-    # fire many inference requests and back up the queue. Button click only.
-
-    _ALL_EXAMPLES = [
-        EXAMPLE_NGINX,
-        EXAMPLE_DEPLOYMENT_INCOMPLETE,
-        EXAMPLE_INCOMPLETE_SERVICE,
-        EXAMPLE_CONFIGMAP,
-        EXAMPLE_SECRET,
-        EXAMPLE_STATEFULSET,
-        EXAMPLE_CRONJOB,
-        EXAMPLE_HPA,
-        EXAMPLE_NETWORKPOLICY,
-        EXAMPLE_INGRESS,
-        EXAMPLE_POD_INIT_PROBES,
-        EXAMPLE_RBAC_MULTIDOC,
-    ]
-    gr.Examples(
-        examples=[[y] for y in _ALL_EXAMPLES],
-        example_labels=[_label_for_example(y) for y in _ALL_EXAMPLES],
-        inputs=[yaml_input],
-        examples_per_page=20,   # show all on one page, no pagination
-        label="Example YAMLs",
-    )
-
-    gr.Markdown(
-        """
+            gr.Markdown(
+                """
 ---
 
 ### What it does well
@@ -555,7 +662,30 @@ Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
 - Novel CRD instances and rare annotation keys may not work
 - Trained on `substratusai/the-stack-yaml-k8s`
 """
-    )
+            )
+
+        with gr.Tab("Manifest galaxy", id="galaxy"):
+            gr.Markdown(
+                "Each point is one K8s manifest from the training corpus, "
+                "embedded as a `doc_vec` by the bottom-up tree aggregator, "
+                "then projected to 2D with UMAP (cosine metric). "
+                "Manifests with similar structure end up near each other — "
+                "the model has never been told what `kind` is, "
+                "yet clusters of `Deployment`, `Service`, `ConfigMap` etc. "
+                "form spontaneously."
+            )
+            if GALAXY_FIG is not None:
+                gr.Plot(value=GALAXY_FIG, show_label=False)
+            else:
+                gr.Markdown("_Galaxy data unavailable._")
+            gr.Markdown(
+                "Hover for `kind / name / namespace`. "
+                "Top 15 kinds are colored; everything else is gray. "
+                "Click a legend entry to toggle that kind on/off."
+            )
+
+    open_suggester.click(lambda: gr.Tabs(selected="suggester"), outputs=tabs)
+    open_galaxy.click(lambda: gr.Tabs(selected="galaxy"), outputs=tabs)
 
 
 _log("Gradio UI built — launching")
