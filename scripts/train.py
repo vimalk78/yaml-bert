@@ -1,4 +1,4 @@
-"""v8 Phase 1 reconstruction benchmark: train on 5K-doc subset, MLM-only OR
+"""v9 reconstruction benchmark: train on N-doc subset, MLM-only OR
 MLM+reconstruction. Per-epoch loss + val + doc_vec dumps for probe trajectory.
 """
 from __future__ import annotations
@@ -18,13 +18,17 @@ from yaml_bert.config import YamlBertConfig
 from yaml_bert.embedding import YamlBertEmbedding
 from yaml_bert.dataset import YamlBertDataset, collate_fn
 from yaml_bert.model import YamlBertModel
-from yaml_bert.vocab import VocabBuilder
+from yaml_bert.vocab import Vocabulary, VocabBuilder
 
 DATASET_NAME = "substratusai/the-stack-yaml-k8s"
+TOKENIZER_PATH = os.environ.get(
+    "YAML_BERT_TOKENIZER",
+    "output_v8_276K_recon_seed42/unified_bpe_8k.json",
+)
 
 
-def _forward_v8(model, batch, device, recon_enabled: bool):
-    """Forward YamlBertModel. Returns (logits, doc_vec, recon_logits|None)."""
+def _forward_v9(model, batch, device, recon_enabled: bool):
+    """Forward YamlBertModel (v9). Returns (logits, doc_vec, recon_logits|None)."""
     kwargs = dict(
         token_ids=batch["token_ids"].to(device),
         node_types=batch["node_types"].to(device),
@@ -32,6 +36,8 @@ def _forward_v8(model, batch, device, recon_enabled: bool):
         sibling_indices=batch["sibling_indices"].to(device),
         batch_info=batch["batch_info"],
         padding_mask=batch["padding_mask"].to(device),
+        logical_ids=batch["logical_ids"].to(device),
+        n_logical_per_doc=batch["n_logical_per_doc"].to(device),
         parent_of_tensor=batch["parent_of_tensor"].to(device),
         top_level_key_mask=batch["top_level_key_mask"].to(device),
         edges_by_depth={
@@ -78,7 +84,7 @@ def _compute_losses(out, batch, device, recon_enabled: bool, recon_weight: float
 
 def _dump_doc_vecs(model, dataset, batch_size, device, recon_enabled,
                    output_path, cached, num_workers):
-    """One pass over the FULL 5K corpus dumping doc_vecs to disk."""
+    """One pass over the FULL corpus dumping doc_vecs to disk."""
     from yaml_bert.types import _extract_kind
     model.eval()
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
@@ -93,7 +99,7 @@ def _dump_doc_vecs(model, dataset, batch_size, device, recon_enabled,
     )
     with torch.no_grad():
         for batch_idx, batch in enumerate(dump_iter):
-            _, dvec, _ = _forward_v8(model, batch, device, recon_enabled)
+            _, dvec, _ = _forward_v9(model, batch, device, recon_enabled)
             doc_vecs.append(dvec.cpu())
             for j in range(dvec.size(0)):
                 gi = batch_idx * batch_size + j
@@ -114,6 +120,10 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--reconstruction", choices=["on", "off"], default="off")
     parser.add_argument("--recon-weight", type=float, default=0.5)
+    parser.add_argument("--min-freq", type=int, default=5,
+                        help="min frequency for atomic target vocab keys")
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="DataLoader workers (default: auto)")
     parser.add_argument("--dump-every-n-epochs", type=int, default=1,
                         help="dump doc_vecs every N epochs (final epoch always "
                              "dumped). 1=every epoch; 5=every 5 epochs + final.")
@@ -131,25 +141,33 @@ def main() -> None:
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    cache_path = os.path.join(args.output_dir, "doc_cache.pkl")
-    # Convention: --max-docs 0 means "use the full corpus" (matches scripts/train.py)
+    # v9: prefer pre-built 276K cache to avoid re-linearizing
+    prebuilt_cache = "output_v8_276K_recon_seed42/doc_cache.pkl"
+    cache_path = (
+        prebuilt_cache
+        if os.path.exists(prebuilt_cache)
+        else os.path.join(args.output_dir, "doc_cache.pkl")
+    )
+    # Convention: --max-docs 0 means "use the full corpus"
     max_docs = None if args.max_docs == 0 else args.max_docs
     print(f"Step 0: Linearize → {cache_path} (max_docs={max_docs or 'all'})")
-    cached = build_or_load_cache(DATASET_NAME, cache_path=cache_path,
-                                 max_docs=max_docs)
+    cached_full = build_or_load_cache(DATASET_NAME, cache_path=cache_path,
+                                      max_docs=max_docs)
+    # Slice to requested max_docs after load (cache may hold more)
+    cached = cached_full[:max_docs] if max_docs else cached_full
+    print(f"  using {len(cached):,} documents")
 
-    print("Step 1: Build vocab (v8 mode — atomic targets)")
-    all_nodes = [n for doc in cached for n in doc]
-    vocab = VocabBuilder().build(
-        all_nodes,
-        key_min_freq=10,
-        value_min_freq=10,
-        simple_target_min_freq=5,
-        kind_target_min_freq=2,
+    print("Step 1: Build vocab (v9 — subword tokenizer + atomic targets)")
+    atomic_target_vocab = VocabBuilder.build_atomic_target_vocab(
+        cached, min_freq=args.min_freq,
+    )
+    vocab = Vocabulary.from_tokenizer_path(
+        tokenizer_path=TOKENIZER_PATH,
+        atomic_target_vocab=atomic_target_vocab,
     )
     vocab.save(os.path.join(args.output_dir, "vocab.json"))
-    print(f"  key vocab: {vocab.key_vocab_size}")
-    print(f"  atomic vocab: {vocab.atomic_target_vocab_size}")
+    print(f"  subword vocab size: {vocab.subword_vocab_size}")
+    print(f"  atomic target vocab: {vocab.atomic_target_vocab_size}")
     print(f"  reconstruction: {args.reconstruction} (weight={args.recon_weight})")
 
     print("Step 2: Build dataset (train: 90%, val: 10%)")
@@ -168,10 +186,9 @@ def main() -> None:
 
     print("Step 3: Build model")
     emb = YamlBertEmbedding(config=config,
-                            key_vocab_size=vocab.key_vocab_size,
-                            value_vocab_size=vocab.value_vocab_size)
+                            subword_vocab_size=vocab.subword_vocab_size)
     model = YamlBertModel(config=config, embedding=emb,
-                    atomic_vocab_size=vocab.atomic_target_vocab_size)
+                          atomic_vocab_size=vocab.atomic_target_vocab_size)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     n_params = sum(p.numel() for p in model.parameters())
@@ -180,10 +197,15 @@ def main() -> None:
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr)
 
-    num_workers = min(8, max(2, (os.cpu_count() or 4) // 2))
+    if args.num_workers is not None:
+        num_workers = args.num_workers
+    else:
+        num_workers = min(8, max(2, (os.cpu_count() or 4) // 2))
+    persistent = num_workers > 0
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
                               shuffle=True, collate_fn=collate_fn,
-                              num_workers=num_workers, persistent_workers=True,
+                              num_workers=num_workers,
+                              persistent_workers=persistent,
                               pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
                             shuffle=False, collate_fn=collate_fn,
@@ -207,7 +229,7 @@ def main() -> None:
         )
         for batch in train_iter:
             optimizer.zero_grad()
-            out = _forward_v8(model, batch, device, recon_enabled)
+            out = _forward_v9(model, batch, device, recon_enabled)
             total_loss, mlm_loss, recon_loss = _compute_losses(
                 out, batch, device, recon_enabled, args.recon_weight,
             )
@@ -243,7 +265,7 @@ def main() -> None:
         )
         with torch.no_grad():
             for vb in val_iter:
-                out = _forward_v8(model, vb, device, recon_enabled)
+                out = _forward_v9(model, vb, device, recon_enabled)
                 tl, ml, rl = _compute_losses(
                     out, vb, device, recon_enabled, args.recon_weight,
                 )
@@ -281,9 +303,11 @@ def main() -> None:
 
     total_dur = time.time() - train_start
     print(f"Step 5: Save final checkpoint")
-    ckpt_path = os.path.join(args.output_dir, "v8_phase1_recon.pt")
+    ckpt_path = os.path.join(args.output_dir, "v9_checkpoint.pt")
     torch.save({
         "model_state_dict": model.state_dict(),
+        "config": config,
+        "atomic_target_vocab": vocab.atomic_target_vocab,
         "epoch_log": epoch_log,
         "n_params": n_params,
         "total_train_sec": total_dur,
