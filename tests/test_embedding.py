@@ -55,3 +55,35 @@ def test_tree_pos_variant_no_depth_still_works():
     )
     emb = YamlBertEmbedding(config=cfg, subword_vocab_size=64)
     assert emb.depth_embedding is None
+
+
+def test_tree_pos_variant_no_sibling_still_works():
+    cfg = YamlBertConfig(
+        d_model=16, num_layers=1, num_heads=1, d_ff=32,
+        max_depth=8, max_sibling=8, max_seq_len=64,
+        tree_pos_variant=TreePosVariant.NO_SIBLING,
+    )
+    emb = YamlBertEmbedding(config=cfg, subword_vocab_size=64)
+    assert emb.sibling_embedding is None
+    assert emb.depth_embedding is not None  # NO_SIBLING keeps depth
+
+
+def test_tree_pos_variant_sequential_uses_pos_embedding():
+    cfg = YamlBertConfig(
+        d_model=16, num_layers=1, num_heads=1, d_ff=32,
+        max_depth=8, max_sibling=8, max_seq_len=64,
+        tree_pos_variant=TreePosVariant.SEQUENTIAL,
+    )
+    emb = YamlBertEmbedding(config=cfg, subword_vocab_size=64)
+    assert emb.depth_embedding is None
+    assert emb.sibling_embedding is None
+    assert emb.pos_embedding is not None
+    # Smoke: forward with the SEQUENTIAL variant produces non-NaN output
+    import torch
+    out = emb(
+        token_ids=torch.zeros(1, 5, dtype=torch.long),
+        node_types=torch.zeros(1, 5, dtype=torch.long),
+        depths=torch.zeros(1, 5, dtype=torch.long),
+        sibling_indices=torch.zeros(1, 5, dtype=torch.long),
+    )
+    assert torch.isfinite(out).all()
