@@ -254,6 +254,17 @@ def _build_galaxy_figure(data_path: str):
     for k in top_kinds:
         series.append((k, color_map[k], [i for i, kk in enumerate(kinds) if kk == k]))
 
+    def _hover(i: int) -> str:
+        parts = [f"<b>{kinds[i]}</b>", data["name"][i]]
+        ns = data["namespace"][i]
+        # "(default)" is the build-time placeholder when the manifest didn't
+        # specify a namespace — true for all cluster-scoped kinds (Namespace,
+        # ClusterRole, CRD, …) and for namespaced resources that omit it.
+        # Showing "ns: (default)" for these is misleading, so suppress.
+        if ns and ns != "(default)":
+            parts.append(f"ns: {ns}")
+        return "<br>".join(parts)
+
     for label, color, idxs in series:
         if not idxs:
             continue
@@ -263,9 +274,7 @@ def _build_galaxy_figure(data_path: str):
             mode="markers",
             name=f"{label} ({len(idxs):,})",
             marker=dict(size=4, color=color, opacity=0.65),
-            text=[(f"<b>{kinds[i]}</b><br>"
-                   f"{data['name'][i]}<br>"
-                   f"ns: {data['namespace'][i]}") for i in idxs],
+            text=[_hover(i) for i in idxs],
             hovertemplate="%{text}<extra></extra>",
         )
 
@@ -289,6 +298,567 @@ try:
 except FileNotFoundError:
     GALAXY_FIG = None
     _log(f"Galaxy data not found at {GALAXY_DATA_PATH} — galaxy tab will be empty")
+
+
+# ----- Structural probes -----
+#
+# Presets of hand-crafted manifests that probe whether the model encodes
+# specific structural distinctions. Each preset's manifests are encoded to
+# doc_vecs, projected to 2D via MDS (preserves pairwise cosine distances),
+# and shown as a scatter plot. Users can add their own YAMLs to see where
+# they land relative to the preset.
+
+# ---- Preset manifests ----
+
+_POD_NGINX = """apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-app
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+"""
+
+_POD_REDIS = """apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-app
+spec:
+  containers:
+  - name: app
+    image: redis
+    ports:
+    - containerPort: 6379
+"""
+
+_POD_NGINX_INIT = """apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-with-init
+spec:
+  initContainers:
+  - name: setup
+    image: busybox
+    command: ["sh", "-c", "echo init"]
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+"""
+
+_POD_REDIS_INIT = """apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-with-init
+spec:
+  initContainers:
+  - name: setup
+    image: busybox
+    command: ["sh", "-c", "echo init"]
+  containers:
+  - name: app
+    image: redis
+    ports:
+    - containerPort: 6379
+"""
+
+_SVC_CLUSTERIP_WEB = """apiVersion: v1
+kind: Service
+metadata:
+  name: web-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+"""
+
+_SVC_CLUSTERIP_API = """apiVersion: v1
+kind: Service
+metadata:
+  name: api-clusterip
+spec:
+  type: ClusterIP
+  selector:
+    app: api
+  ports:
+  - port: 443
+    targetPort: 8443
+"""
+
+_SVC_NODEPORT = """apiVersion: v1
+kind: Service
+metadata:
+  name: web-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: web
+  ports:
+  - port: 80
+    targetPort: 8080
+    nodePort: 30080
+"""
+
+_SVC_LOADBALANCER = """apiVersion: v1
+kind: Service
+metadata:
+  name: web-lb
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  externalTrafficPolicy: Local
+  ports:
+  - port: 80
+    targetPort: 8080
+"""
+
+_DEPLOY_NGINX = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        ports:
+        - containerPort: 80
+"""
+
+_CONFIGMAP_APP = """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  config.yaml: |
+    debug: true
+  app.properties: |
+    key1=value1
+"""
+
+_POD_NS_PROD_1 = """apiVersion: v1
+kind: Pod
+metadata:
+  name: web-1
+  namespace: production
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+"""
+
+_POD_NS_PROD_2 = """apiVersion: v1
+kind: Pod
+metadata:
+  name: web-2
+  namespace: production
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+"""
+
+_POD_NS_STAGING_1 = """apiVersion: v1
+kind: Pod
+metadata:
+  name: web-1
+  namespace: staging
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+"""
+
+_POD_NS_STAGING_2 = """apiVersion: v1
+kind: Pod
+metadata:
+  name: web-2
+  namespace: staging
+spec:
+  containers:
+  - name: app
+    image: nginx
+    ports:
+    - containerPort: 80
+"""
+
+
+def _verdict_init(cos):
+    cd = float(cos[2][3])
+    mx = float(max(cos[0][2], cos[1][3]))
+    passed = cd > mx
+    msg = (
+        f"`cos(C, D)` = **{cd:.3f}** (both have init) · "
+        f"`max(cos(A,C), cos(B,D))` = **{mx:.3f}** (mixed). "
+        + ("Init-pairs cluster tighter than mixed pairs — the model treats "
+           "`initContainers` as a real structural feature."
+           if passed else
+           "Mixed pairs are at least as close as init-pairs — the model "
+           "does not cleanly separate Pods by `initContainers` presence here.")
+    )
+    return passed, msg
+
+
+def _verdict_service_type(cos):
+    same = float(cos[0][1])
+    cross = float(max(cos[0][2], cos[0][3], cos[1][2], cos[1][3], cos[2][3]))
+    passed = same > cross
+    msg = (
+        f"`cos(A, B)` = **{same:.3f}** (both ClusterIP) · "
+        f"`max(cross-type)` = **{cross:.3f}**. "
+        + ("Same-type pairs cluster tighter than cross-type pairs — the "
+           "model has internalized the `type` distinction (likely through "
+           "the structural keys each type adds: `nodePort`, "
+           "`externalTrafficPolicy`)."
+           if passed else
+           "Same-type pairs do not cluster more tightly than cross-type "
+           "pairs — `type` is not a primary axis in the embedding here.")
+    )
+    return passed, msg
+
+
+def _verdict_namespace(cos):
+    # A, B in production · C, D in staging — all otherwise identical Pods.
+    same_ns = float(min(cos[0][1], cos[2][3]))
+    cross_ns = float(max(cos[0][2], cos[0][3], cos[1][2], cos[1][3]))
+    passed = same_ns > cross_ns
+    msg = (
+        f"`min(same-ns cos)` = **{same_ns:.3f}** · "
+        f"`max(cross-ns cos)` = **{cross_ns:.3f}**. "
+        + ("Same-namespace pairs cluster tighter — the model has somehow "
+           "encoded namespace as a feature (surprising, since namespace is "
+           "a leaf VALUE per the design rationale)."
+           if passed else
+           "Same-namespace and cross-namespace pairs have indistinguishable "
+           "cosines — the model is value-blind for namespace. This matches "
+           "the design: values are second-class in `doc_vec`. Compare with "
+           "the Service-type probe (passes) — `type` values matter because "
+           "they bring structural KEYS along, while namespace values don't.")
+    )
+    return passed, msg
+
+
+def _verdict_cross_kind(cos):
+    # A=Pod nginx, B=Pod redis, C=Deployment wrapping nginx, D=ConfigMap
+    pod_pod = float(cos[0][1])             # both Pods
+    pod_deploy = float(cos[0][2])          # Pod ↔ Deployment-wrapping-that-Pod
+    pod_cm = float(cos[0][3])              # Pod ↔ unrelated kind
+    deploy_cm = float(cos[2][3])           # Deployment ↔ unrelated kind
+    passed = pod_deploy > max(pod_cm, deploy_cm)
+    msg = (
+        f"`cos(Pod, Deployment-wrapping-it)` = **{pod_deploy:.3f}** · "
+        f"`cos(Pod, ConfigMap)` = **{pod_cm:.3f}** · "
+        f"`cos(Pod, Pod)` = **{pod_pod:.3f}** (kind silo). "
+        + ("Pod and the Deployment that wraps it are closer than either is "
+           "to an unrelated ConfigMap — the model sees them as a family."
+           if passed else
+           "Pod-Deployment family is not detected — kinds form sharp silos "
+           "in the embedding.")
+    )
+    return passed, msg
+
+
+PRESETS = [
+    {
+        "id": "init",
+        "title": "Pod ± initContainers",
+        "hypothesis": (
+            "If `initContainers` is a meaningful structural feature, two "
+            "Pods that both have one should be closer in embedding space "
+            "than a Pod with one and a structurally similar Pod without."
+        ),
+        "manifests": [
+            {"name": "nginx (no init)",   "yaml": _POD_NGINX},
+            {"name": "redis (no init)",   "yaml": _POD_REDIS},
+            {"name": "nginx + init",      "yaml": _POD_NGINX_INIT},
+            {"name": "redis + init",      "yaml": _POD_REDIS_INIT},
+        ],
+        "verdict_fn": _verdict_init,
+    },
+    {
+        "id": "service-type",
+        "title": "Service type (ClusterIP / NodePort / LoadBalancer)",
+        "hypothesis": (
+            "Each Service `type` brings its own structural keys "
+            "(`nodePort`, `externalTrafficPolicy`, …). Same-type Services "
+            "should cluster, even with different selectors/ports."
+        ),
+        "manifests": [
+            {"name": "ClusterIP — app=web",       "yaml": _SVC_CLUSTERIP_WEB},
+            {"name": "ClusterIP — app=api",       "yaml": _SVC_CLUSTERIP_API},
+            {"name": "NodePort — app=web",        "yaml": _SVC_NODEPORT},
+            {"name": "LoadBalancer — app=web",    "yaml": _SVC_LOADBALANCER},
+        ],
+        "verdict_fn": _verdict_service_type,
+    },
+    {
+        "id": "namespace",
+        "title": "Pods in same namespace vs different namespace",
+        "hypothesis": (
+            "If the model encodes `metadata.namespace` as a feature, two "
+            "Pods in the same namespace should be closer than two Pods in "
+            "different namespaces (controlling for structure). "
+            "_Honest prediction: this should **fail** — namespace is a "
+            "leaf value, and values are second-class in `doc_vec`. The "
+            "failure would confirm the design rationale; a pass would "
+            "refute it._"
+        ),
+        "manifests": [
+            {"name": "production / web-1", "yaml": _POD_NS_PROD_1},
+            {"name": "production / web-2", "yaml": _POD_NS_PROD_2},
+            {"name": "staging / web-1",    "yaml": _POD_NS_STAGING_1},
+            {"name": "staging / web-2",    "yaml": _POD_NS_STAGING_2},
+        ],
+        "verdict_fn": _verdict_namespace,
+    },
+    {
+        "id": "cross-kind",
+        "title": "Pod vs Deployment wrapping the same Pod",
+        "hypothesis": (
+            "A Deployment wraps a Pod template inside `spec.template`. "
+            "If the model sees them as a related family, the Pod and "
+            "Deployment should be closer than either is to an unrelated "
+            "kind like ConfigMap."
+        ),
+        "manifests": [
+            {"name": "Pod (nginx)",                  "yaml": _POD_NGINX},
+            {"name": "Pod (redis)",                  "yaml": _POD_REDIS},
+            {"name": "Deployment wrapping nginx",    "yaml": _DEPLOY_NGINX},
+            {"name": "ConfigMap (unrelated)",        "yaml": _CONFIGMAP_APP},
+        ],
+        "verdict_fn": _verdict_cross_kind,
+    },
+]
+
+# Letters & colors used for both plot points and accordion headers.
+_PRESET_PALETTE = [
+    "#1f77b4",  # A blue
+    "#ff7f0e",  # B orange
+    "#2ca02c",  # C green
+    "#d62728",  # D red
+    "#9467bd",  # E purple
+    "#8c564b",  # F brown
+    "#e377c2",  # G pink
+    "#17becf",  # H cyan
+]
+_PRESET_LETTERS = ["A", "B", "C", "D", "E", "F", "G", "H"]
+
+
+# Reuse one linearizer/annotator/config across calls (cheap, but skip the
+# per-call construction inside _encode_doc_vec).
+def _make_encoder_state():
+    from yaml_bert.annotator import DomainAnnotator
+    from yaml_bert.config import YamlBertConfig
+    from yaml_bert.linearizer import YamlLinearizer
+    return YamlLinearizer(), DomainAnnotator(), YamlBertConfig(
+        mask_prob=0.0, recon_enabled=False,
+    )
+
+
+_LINEARIZER, _ANNOTATOR, _INFER_CONFIG = _make_encoder_state()
+
+
+def _encode_doc_vec(yaml_text: str) -> torch.Tensor:
+    """Encode one YAML doc and return its doc_vec (shape (d_model,))."""
+    from yaml_bert.dataset import YamlBertDataset, collate_fn as _collate
+    nodes = _LINEARIZER.linearize(yaml_text)
+    if not nodes:
+        raise ValueError("YAML produced no nodes")
+    _ANNOTATOR.annotate(nodes)
+    ds = YamlBertDataset([nodes], VOCAB, _INFER_CONFIG)
+    item = ds[0]
+    batch = _collate([item])
+    with torch.no_grad():
+        out = MODEL(
+            token_ids=batch["token_ids"],
+            node_types=batch["node_types"],
+            depths=batch["depths"],
+            sibling_indices=batch["sibling_indices"],
+            batch_info=batch["batch_info"],
+            padding_mask=batch["padding_mask"],
+            parent_of_tensor=batch["parent_of_tensor"],
+            top_level_key_mask=batch["top_level_key_mask"],
+            edges_by_depth=batch["edges_by_depth"],
+            parents_by_depth=batch["parents_by_depth"],
+        )
+    return out[1][0]  # (d_model,)
+
+
+def _layout_2d(vecs):
+    """Project doc_vecs to 2D coords via MDS on cosine distances."""
+    import numpy as np
+    n = len(vecs)
+    if n == 1:
+        return np.array([[0.0, 0.0]])
+    if n == 2:
+        return np.array([[-1.0, 0.0], [1.0, 0.0]])
+
+    if isinstance(vecs, list):
+        vecs = torch.stack(vecs)
+    vecs_norm = vecs / vecs.norm(dim=1, keepdim=True)
+    cos = (vecs_norm @ vecs_norm.t()).numpy()
+    dist = 1.0 - cos
+    np.fill_diagonal(dist, 0.0)
+    dist = np.clip(dist, 0.0, None)
+
+    from sklearn.manifold import MDS
+    mds = MDS(
+        n_components=2,
+        metric="precomputed",
+        random_state=42,
+        normalized_stress="auto",
+        init="classical_mds",
+    )
+    return mds.fit_transform(dist)
+
+
+def _find_identical_groups(items, threshold: float = 0.9999):
+    """Find groups of items whose pairwise cosine similarity is ~1.0.
+    These represent inputs the model encodes to the same `doc_vec`
+    (e.g. when their differing values all map to the same vocab token,
+    typically [UNK]). The plot must show this honestly: they overlap.
+    """
+    if len(items) < 2:
+        return []
+    vecs = torch.stack([it["vec"] for it in items])
+    vecs_norm = vecs / vecs.norm(dim=1, keepdim=True)
+    cos = (vecs_norm @ vecs_norm.t()).numpy()
+
+    groups: list[list[int]] = []
+    assigned = [False] * len(items)
+    for i in range(len(items)):
+        if assigned[i]:
+            continue
+        group = [i]
+        assigned[i] = True
+        for j in range(i + 1, len(items)):
+            if not assigned[j] and cos[i][j] >= threshold:
+                group.append(j)
+                assigned[j] = True
+        if len(group) > 1:
+            groups.append(group)
+    return groups
+
+
+def _collision_note(items):
+    """Markdown note when two or more items produce identical doc_vecs."""
+    groups = _find_identical_groups(items)
+    if not groups:
+        return ""
+    lines = []
+    for g in groups:
+        labels = ", ".join(f"`{items[i]['letter']}`" for i in g)
+        lines.append(
+            f"- {labels} encode to **identical** `doc_vec`s "
+            f"(`cos ≈ 1.0`). The plot will show them overlapping — that "
+            f"is honest: the model cannot tell these inputs apart. "
+            f"Likely cause: differing values all collapse to the same "
+            f"vocab token (often `[UNK]` when names aren't frequent "
+            f"enough in the training corpus to earn a vocab slot)."
+        )
+    return "\n\n**Identical embeddings detected:**\n" + "\n".join(lines)
+
+
+def _build_preset_figure(items, hypothesis=""):
+    """Build a Plotly scatter from a list of {letter, name, vec, ...} items."""
+    import plotly.graph_objects as go
+    if not items:
+        return go.Figure()
+    vecs = [it["vec"] for it in items]
+    coords = _layout_2d(vecs)
+    colors = [_PRESET_PALETTE[i % len(_PRESET_PALETTE)] for i in range(len(items))]
+    letters = [it["letter"] for it in items]
+    names = [it["name"] for it in items]
+
+    fig = go.Figure()
+    fig.add_scatter(
+        x=coords[:, 0],
+        y=coords[:, 1],
+        mode="markers+text",
+        text=letters,
+        textposition="top center",
+        textfont=dict(size=14, color="#222"),
+        marker=dict(size=18, color=colors, opacity=0.85,
+                    line=dict(width=2, color="#222")),
+        hovertext=[f"<b>{l}</b> — {n}" for l, n in zip(letters, names)],
+        hovertemplate="%{hovertext}<extra></extra>",
+        showlegend=False,
+    )
+    fig.update_layout(
+        title="2D layout (MDS of cosine distances) — closer = more similar",
+        height=460,
+        margin=dict(l=10, r=10, t=50, b=10),
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False, scaleanchor="x"),
+        plot_bgcolor="white",
+    )
+    return fig
+
+
+def _encode_preset(preset):
+    """Encode all manifests in a preset; return list of items with vecs."""
+    items = []
+    for i, m in enumerate(preset["manifests"]):
+        vec = _encode_doc_vec(m["yaml"])
+        items.append({
+            "letter": _PRESET_LETTERS[i],
+            "name": m["name"],
+            "yaml": m["yaml"],
+            "vec": vec,
+            "preset_id": preset["id"],
+        })
+    return items
+
+
+def _compute_cos_matrix(items):
+    """Compute cosine matrix from items (for the verdict function)."""
+    vecs = torch.stack([it["vec"] for it in items])
+    vecs_norm = vecs / vecs.norm(dim=1, keepdim=True)
+    return (vecs_norm @ vecs_norm.t()).numpy()
+
+
+def _verdict_markdown(preset, items):
+    """Run the preset's verdict function on the first N items (its presets)."""
+    n_preset = len(preset["manifests"])
+    if len(items) < n_preset:
+        return "_(not enough manifests for verdict)_"
+    cos = _compute_cos_matrix(items[:n_preset])
+    passed, msg = preset["verdict_fn"](cos)
+    emoji = "✅" if passed else "❌"
+    main = f"**Verdict on preset:** {emoji} &nbsp; {msg}"
+    return main + _collision_note(items)
+
+
+_log("Encoding preset manifests...")
+PRESET_BY_ID = {p["id"]: p for p in PRESETS}
+PRESET_ITEMS_BY_ID = {p["id"]: _encode_preset(p) for p in PRESETS}
+for p in PRESETS:
+    items = PRESET_ITEMS_BY_ID[p["id"]]
+    cos = _compute_cos_matrix(items)
+    passed, _ = p["verdict_fn"](cos)
+    _log(f"  '{p['title']}': {'PASS' if passed else 'FAIL'}")
 
 
 # ----- UI -----
@@ -558,6 +1128,11 @@ roleRef:
 """
 
 _log("Building Gradio UI...")
+_TILE_CSS = """
+.demo-tile { display: flex !important; flex-direction: column !important; height: 100%; }
+.demo-tile > .prose, .demo-tile > .markdown { flex: 1 1 auto; }
+.demo-tile > button { margin-top: auto !important; }
+"""
 with gr.Blocks(title="YAML-BERT") as demo:
     gr.Markdown(
         f"""
@@ -567,7 +1142,7 @@ Code: [github.com/vimalk78/yaml-bert](https://github.com/vimalk78/yaml-bert) ·
 Trained with MLM + reconstruction on 276K K8s manifests ·
 {n_params:,} params
 
-**This Space includes 2 demos — pick a tab below, or use the tiles on the Overview tab.**
+**This Space includes 3 demos — pick a tab below, or use the tiles on the Overview tab.**
 """
     )
 
@@ -575,27 +1150,36 @@ Trained with MLM + reconstruction on 276K K8s manifests ·
         with gr.Tab("Overview", id="overview"):
             gr.Markdown("### Demos in this Space")
             with gr.Row():
-                with gr.Column():
+                with gr.Column(elem_classes="demo-tile"):
                     gr.Markdown(
                         "#### 🧩 Missing-field suggester\n"
-                        "Paste a Kubernetes YAML manifest. The model walks each "
-                        "parent level, identifies fields it expects to see there "
-                        "but that are absent, and ranks the suggestions by "
-                        "confidence."
+                        "Paste a YAML manifest; the model predicts which "
+                        "structural fields it expects but you didn't include, "
+                        "ranked by confidence."
                     )
                     open_suggester = gr.Button(
                         "Open missing-field suggester →", variant="primary"
                     )
-                with gr.Column():
+                with gr.Column(elem_classes="demo-tile"):
                     gr.Markdown(
                         "#### 🌌 Manifest galaxy\n"
-                        "10,000 Kubernetes manifests embedded by the model and "
-                        "projected to 2D. Watch clusters of `Deployment`, "
-                        "`Service`, `ConfigMap` etc. form spontaneously — the "
-                        "model was never told what `kind` is."
+                        "10,000 K8s manifests projected to 2D from their "
+                        "`doc_vec` embeddings. Kinds cluster spontaneously — "
+                        "the model was never told what `kind` is."
                     )
                     open_galaxy = gr.Button(
                         "Open manifest galaxy →", variant="primary"
+                    )
+                with gr.Column(elem_classes="demo-tile"):
+                    gr.Markdown(
+                        "#### 🔬 Structural probes\n"
+                        "Preset manifest sets that test whether the model "
+                        "has learned specific structural distinctions, "
+                        "shown as a 2D layout. Add your own YAML to see "
+                        "where it lands."
+                    )
+                    open_probes = gr.Button(
+                        "Open structural probes →", variant="primary"
                     )
 
         with gr.Tab("Missing-field suggester", id="suggester"):
@@ -684,11 +1268,158 @@ Trained with MLM + reconstruction on 276K K8s manifests ·
                 "Click a legend entry to toggle that kind on/off."
             )
 
+        with gr.Tab("Structural probes", id="probes"):
+            gr.Markdown(
+                "Pick a preset that explores a specific structural claim. "
+                "The 2D plane is an MDS projection of the manifests' "
+                "`doc_vecs` — **closer = more similar**. "
+                "You can also paste your own YAML to see where it lands "
+                "relative to the preset."
+            )
+
+            _initial_preset = PRESETS[0]
+            _initial_items = PRESET_ITEMS_BY_ID[_initial_preset["id"]]
+
+            preset_dd = gr.Dropdown(
+                choices=[(p["title"], p["id"]) for p in PRESETS],
+                value=_initial_preset["id"],
+                label="Preset",
+                interactive=True,
+            )
+            hypothesis_md = gr.Markdown(
+                value=f"**Hypothesis:** {_initial_preset['hypothesis']}"
+            )
+
+            items_state = gr.State(value=_initial_items)
+
+            with gr.Row():
+                with gr.Column(scale=2):
+                    plot = gr.Plot(
+                        value=_build_preset_figure(_initial_items),
+                        show_label=False,
+                    )
+                    verdict_md = gr.Markdown(
+                        value=_verdict_markdown(_initial_preset, _initial_items)
+                    )
+
+                with gr.Column(scale=1):
+                    gr.Markdown("**Manifests in this comparison**")
+
+                    @gr.render(inputs=[items_state])
+                    def _render_accordions(items):
+                        if not items:
+                            gr.Markdown("_No manifests._")
+                            return
+                        preset_id = items[0].get("preset_id", "")
+                        n_preset = (len(PRESET_BY_ID[preset_id]["manifests"])
+                                    if preset_id in PRESET_BY_ID else 0)
+                        for i, it in enumerate(items):
+                            is_user = i >= n_preset
+                            label = f"[{it['letter']}] {it['name']}"
+                            if is_user:
+                                label += "  · added"
+                            with gr.Accordion(label, open=False):
+                                gr.Code(
+                                    value=it["yaml"], language="yaml",
+                                    lines=12, interactive=False,
+                                )
+                                if is_user:
+                                    rm = gr.Button(
+                                        f"Remove {it['letter']}",
+                                        variant="secondary",
+                                    )
+
+                                    def _remove(state, idx=i):
+                                        new = state[:idx] + state[idx + 1:]
+                                        preset = PRESET_BY_ID.get(
+                                            new[0]["preset_id"]) if new else None
+                                        verdict = (_verdict_markdown(preset, new)
+                                                   if preset else "")
+                                        return (new,
+                                                _build_preset_figure(new),
+                                                verdict)
+                                    rm.click(
+                                        _remove,
+                                        inputs=[items_state],
+                                        outputs=[items_state, plot, verdict_md],
+                                    )
+
+                    gr.Markdown("---")
+                    with gr.Accordion("➕ Add your own YAML", open=False):
+                        new_yaml = gr.Code(
+                            language="yaml", lines=10,
+                            label="Paste a K8s manifest",
+                        )
+                        add_btn = gr.Button(
+                            "Encode and add to comparison", variant="primary",
+                        )
+                        add_err = gr.Markdown("")
+
+            def _on_add(state, yaml_text):
+                if not yaml_text or not yaml_text.strip():
+                    return state, _build_preset_figure(state), \
+                        _verdict_markdown_for(state), \
+                        "_Empty YAML — nothing to add._"
+                if len(state) >= len(_PRESET_LETTERS):
+                    return state, _build_preset_figure(state), \
+                        _verdict_markdown_for(state), \
+                        f"_Max {len(_PRESET_LETTERS)} manifests at once._"
+                try:
+                    vec = _encode_doc_vec(yaml_text)
+                except Exception as e:
+                    return state, _build_preset_figure(state), \
+                        _verdict_markdown_for(state), \
+                        f"_Encoding failed: `{type(e).__name__}: {e}`_"
+                from yaml_bert.types import _extract_kind
+                nodes = _LINEARIZER.linearize(yaml_text)
+                kind = _extract_kind(nodes) or "?"
+                preset_id = state[0]["preset_id"] if state else ""
+                new_item = {
+                    "letter": _PRESET_LETTERS[len(state)],
+                    "name": f"{kind} (added)",
+                    "yaml": yaml_text,
+                    "vec": vec,
+                    "preset_id": preset_id,
+                }
+                new_state = state + [new_item]
+                return (new_state,
+                        _build_preset_figure(new_state),
+                        _verdict_markdown_for(new_state),
+                        "")
+
+            def _verdict_markdown_for(state):
+                if not state:
+                    return ""
+                preset = PRESET_BY_ID.get(state[0].get("preset_id", ""))
+                return _verdict_markdown(preset, state) if preset else ""
+
+            def _on_preset_change(preset_id):
+                if preset_id not in PRESET_BY_ID:
+                    return gr.update(), gr.update(), gr.update(), gr.update()
+                preset = PRESET_BY_ID[preset_id]
+                items = PRESET_ITEMS_BY_ID[preset_id]
+                return (items,
+                        _build_preset_figure(items),
+                        f"**Hypothesis:** {preset['hypothesis']}",
+                        _verdict_markdown(preset, items))
+
+            preset_dd.change(
+                _on_preset_change,
+                inputs=[preset_dd],
+                outputs=[items_state, plot, hypothesis_md, verdict_md],
+            )
+            add_btn.click(
+                _on_add,
+                inputs=[items_state, new_yaml],
+                outputs=[items_state, plot, verdict_md, add_err],
+            )
+
     open_suggester.click(lambda: gr.Tabs(selected="suggester"), outputs=tabs)
     open_galaxy.click(lambda: gr.Tabs(selected="galaxy"), outputs=tabs)
+    open_probes.click(lambda: gr.Tabs(selected="probes"), outputs=tabs)
 
 
 _log("Gradio UI built — launching")
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(css=_TILE_CSS)
