@@ -65,15 +65,57 @@ Single vector mixes user intent and cluster reality. Separating gives:
 - **Health clustering**: cluster `status_vec`s across kinds — "find
   everything in the cluster that looks broken."
 
-Storage doubles. Status embedding quality unknown empirically (status
-has timestamps, counts, free-text messages — none well-handled by a
-token model). Worth measuring before committing.
-
 Optional three-way split:
 - `intent_vec` (spec + user-written labels/annotations)
 - `state_vec` (status only)
 - `identity_vec` (name/namespace/ownerRefs — for metadata filtering,
   not similarity)
+
+**The actual blocker is training data, not architecture.** The
+architectural change is mechanically straightforward — fork the
+aggregator into two paths keyed on `parent_path.startswith("status.")`,
+emit two doc_vecs. The hard part is having enough status data to
+produce a status_vec that's actually useful.
+
+Our training corpus (`substratusai/the-stack-yaml-k8s`) is
+GitHub-scraped YAMLs. Users commit specs to git; controllers fill in
+status at runtime, never committed. Concrete signal from earlier
+analysis:
+
+- v7's bigger-boat `vocab_gap` test failed at 0/4 because status keys
+  (`status.replicas`, `status.conditions`) didn't make it into the
+  compound target vocab at all from the training corpus.
+- v8 at full 276K atomic vocab covers them (4/4 on `vocab_gap`),
+  but they're still rare — most documents in the corpus have no
+  status block at all.
+- Even if we separate the vectors architecturally today, the
+  status_vec would be trained on a tiny fraction of the corpus and
+  most documents would feed it nothing.
+
+For a useful status_vec we need a different data source. Candidates,
+in increasing cost:
+
+1. **Kubernetes e2e test snapshots.** The k/k repo's e2e tests produce
+   real `kubectl get -o yaml` output with status. Smaller corpus
+   (~thousands of docs) but real status, kind-balanced.
+2. **Cluster scrapes from running clusters.** Need operational access
+   plus a privacy story. Largest realistic corpus; covers production
+   patterns. Easier inside a single organization (Konflux) than
+   public.
+3. **Synthetic status via controller simulation.** Deploy spec
+   manifests to a `kind` cluster, wait for controllers to converge,
+   `kubectl get -o yaml`. Lots of plumbing, but generates labeled
+   pairs (spec, status_after_convergence) for free.
+
+**Recommendation:** don't pursue spec/status separation until we have
+a status-rich training corpus. The architecture work is easy and can
+land in days; the data work is the actual cycle. Until then, the
+single doc_vec is good enough for the spec-focused use cases (which
+are most of them — retrieval, similarity, structural classification).
+
+Track this in the "Cluster collection pipeline" section below — once
+that pipeline produces status-bearing data at scale, this becomes
+the next architectural cycle.
 
 ### Multi-task heads
 
