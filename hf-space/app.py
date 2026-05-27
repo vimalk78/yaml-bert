@@ -1569,4 +1569,10 @@ Trained with MLM + reconstruction on 276K K8s manifests ·
 _log("Gradio UI built — launching")
 
 if __name__ == "__main__":
-    demo.launch(css=_TILE_CSS)
+    # GRADIO_SHARE=true creates a temporary *.gradio.live tunnel.
+    # Defaults off — Spaces deployment must stay local-bound.
+    import os
+    demo.launch(
+        css=_TILE_CSS,
+        share=os.environ.get("GRADIO_SHARE", "").lower() in ("1", "true", "yes"),
+    )
