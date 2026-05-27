@@ -1,5 +1,17 @@
 """Tree-distance attention bias.
 
+STATUS (as of v9, 2026-05-27): IMPLEMENTED + WIRED + DISABLED-BY-DEFAULT.
+Disabled in v8 commit ff36d9c for perf reasons — per-position `attn_mask`
+forces PyTorch's nn.MultiheadAttention off the fast fused-attention
+kernel, making training 3-5× slower. Never got to a quality verdict.
+
+Worth revisiting in v10+ when:
+  - We have a concrete failing test that tree_bias would plausibly fix
+    (e.g., a wrong-parent-pollution probe that v9 BPE didn't fully close)
+  - AND we're willing to accept the perf cost OR invest in a custom
+    fused kernel / torch.compile path
+  - See MEMORY.md "Tree bias in attention" for the project-level rationale.
+
 Adds a learned bias `b(tree_distance(i, j))` to attention logits at every
 layer. Per-head, per-distance learnable scalars. Inspired by T5's relative
 position bias and ALiBi, adapted to use tree distance instead of sequence

@@ -1,3 +1,12 @@
+"""Simple learned-attention pooling.
+
+STATUS (as of v9, 2026-05-27): NOT integrated into the current model.
+Kept as a v10+ ablation baseline against the tree aggregator. Tests if
+the structural prior in TreeAggregator buys anything over a vanilla
+single-head learned-attention pooling.
+
+Has tests in tests/test_attention_pooling.py.
+"""
 import math
 
 import torch

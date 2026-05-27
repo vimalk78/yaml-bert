@@ -1,3 +1,19 @@
+"""Cross-attention pooling + supervised contrastive loss.
+
+STATUS (as of v9, 2026-05-27): NOT integrated into the current model.
+Kept as a v10+ experiment toolkit:
+
+  - DocumentPooling: cross-attention pooling using the kind node as query.
+    A pre-tree-aggregator design from v1/v2. Useful as an ablation baseline
+    if we ever want to test "is tree aggregation actually better than
+    plain cross-attention pooling?"
+
+  - supervised_contrastive_loss: SupCon implementation. Useful for the
+    v10+ contrastive-learning experiments discussed in v9 results doc
+    (e.g., positive pairs = sibling subtrees of same parent).
+
+Has tests in tests/test_pooling.py.
+"""
 from __future__ import annotations
 
 import torch
