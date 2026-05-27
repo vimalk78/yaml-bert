@@ -400,7 +400,22 @@ post-processing reconstructs the compound path from atomic prediction
 Each builds on a pre-computed embedding corpus, so the infrastructure
 compounds.
 
-### v8.1 candidate — shrink value_vocab dramatically
+### v8.1 candidate — shrink value_vocab dramatically [SUPERSEDED BY v9]
+
+This entire section is superseded by v9 sub-tokenization (see
+[v9-subword-results.md](v9-subword-results.md)). v9 took a different
+path that solved the same problem more thoroughly:
+
+- v8.1 plan: drop low-freq atomic values to shrink the table (38K → 4K)
+- v9 actual: replace atomic values entirely with byte-level BPE subwords
+  (one unified 8K vocab for both keys and values). Total embedding
+  shrank 11.4M → 2.1M params. Model went 22.5M → 18.4M (-18%).
+- v9 also fixed the `[UNK]` collision class as a side effect.
+
+Kept here as historical record because the diagnostic insight (value
+vocab is dominated by user-specific junk) was the seed for v9.
+
+### Original v8.1 analysis (kept for context)
 
 Empirical finding from inspecting the v8 276K vocab.json: the
 `value_vocab` (38,362 entries at `value_min_freq=10`) is dominated by
@@ -447,6 +462,135 @@ Suggested v8.1 mini-cycle:
 Cost: ~$6 (two parallel runs) + ~1 day analysis. Big payoff if it
 works: smaller model, smaller vocab.json, less embedding-memorization
 of user payload, less storage / upload time / inference memory.
+
+## v10 candidates (post-v9, 2026-05-27)
+
+After v9 sub-tokenization shipped, several follow-up directions emerged.
+None are blocking; ranked by how much they'd teach us.
+
+### 1. Recon redesign or removal
+
+Current recon (bag-of-keys prediction over masked subtrees) was
+essentially a no-op in both v8 and v9 — loss stuck at ~0.0003 throughout
+training, contributing <0.15% of gradient signal. The bag-of-keys
+formulation is too easy: with 11K classes and ~30 positives per subtree,
+the model wins by learning class frequencies rather than understanding
+subtree structure.
+
+Options:
+- **Drop recon entirely.** MLM is doing 99.85% of the work. Removing
+  saves ~1-2% wall-time and simplifies the model. Lowest risk.
+- **Replace with path-bigrams.** Predict the bag of `parent→child` key
+  pairs in the masked subtree instead of just keys. Higher cardinality
+  (uses path context, not just key identity), so harder. Reuses the
+  existing BCE head, just over a richer target vocab.
+- **Replace with parent-key prediction.** Given a subtree's vec, predict
+  the parent KEY (cross-entropy over atomic vocab). Forces the subtree
+  vec to encode "what kind of thing am I a child of." Non-trivial.
+
+Cost: each is a 1-2 day implementation + retraining cycle on v9
+infrastructure. The "drop recon" path is cheapest and likely correct
+unless someone wants to defend the IDEA of subtree reconstruction.
+
+### 2. Values into doc_vec (first-class aggregation)
+
+v9 made values first-class as attention inputs but kept them out of
+direct aggregation. The "values are user payload, doc_vec should be
+structure-aware" framing was partially relaxed in v9 but not fully
+inverted. The argument in [key-value-design-rationale.md](key-value-design-rationale.md)
+acknowledges the empirical channel that values reach doc_vec via
+attention, but the aggregator itself is still KEY-only.
+
+A clean v10 experiment: modify the aggregator to mean-pool subwords of
+each logical node (already done in v9), then run two paths:
+- `doc_vec_structural`: pool KEY logical nodes only (current v9 behavior)
+- `doc_vec_full`: pool BOTH KEY and VALUE logical nodes
+
+Train with both heads (one for structural-MLM, one for full-content
+recon or similarity). The dual-output gives us back the structural-only
+embedding for use cases that need it, while making the full embedding
+the default.
+
+Honest blocker: we'd need a use case / failing test that benefits from
+content-aware embedding. Retrieval tasks would be the obvious one
+(find Deployments running nginx vs running redis), but we don't
+currently have a retrieval benchmark to anchor the experiment.
+
+### 3. Absorb values into key subtree_vecs (alternative to #2)
+
+User-proposed alternative: instead of having two doc_vec outputs, let
+the aggregator fold a key's child VALUE subwords into its subtree_vec
+during combine. So `spec.template.spec.containers[0].resources.requests`
+would have a subtree_vec that reflects both its structure AND the
+literal memory/cpu values it holds.
+
+Strong version: don't attend across positions to VALUEs at all (restrict
+cross-position attention), only let them influence via the local-subtree
+aggregator pull-in. More radical, more principled, but a bigger change.
+
+Same blocker as #2 — needs a failing test to evaluate.
+
+### 4. Atomic vocab shrink (quick win)
+
+v9's atomic_target_vocab grew to 11,080 entries (vs v8's 6,049),
+inflating the Token Head by ~4M params. Bumping `--min-freq` from 5 to
+10 or 15 would halve the atomic vocab and trim the head significantly.
+
+Cost: ~$6 + 12 hours JL training. Acceptance gate: capability test
+pass rate within ±5% of v9. Defensible quick win if we want a smaller
+model for deployment.
+
+### 5. Tree-bias revival on v9 infrastructure
+
+`yaml_bert/tree_bias.py` was implemented and wired in v8 but disabled
+for perf (per-position `attn_mask` forces PyTorch off the fast fused-
+attention kernel, training 3-5× slower). Never got a quality verdict.
+
+v9 is a cleaner testing ground because BPE largely fixed the wrong-
+parent-pollution problem that tree_bias was originally designed to
+address. The question now is whether there's any *residual* structural-
+understanding gap that tree_bias closes.
+
+Blocker per [feedback memory "need-failing-test"](../../../.claude/projects/-home-vimal-src-AI-ML-yaml-bert/memory/feedback_need_failing_test.md):
+all current tests pass. Before reviving tree_bias, identify a probe or
+capability test that fails AND that tree_bias would plausibly fix.
+Candidates: deeper-than-15 CRDs, cross-position foreign-key matching
+(selector ↔ matchLabels), or something probe-discoverable about
+attention pattern quality at depth ≥ 4.
+
+### 6. Real galaxy / probe tool (replace Gradio for viz)
+
+Per [project memory "real-galaxy-tool"](../../../.claude/projects/-home-vimal-src-AI-ML-yaml-bert/memory/project_real_galaxy_tool.md):
+the galaxy and structural probes inside the Gradio Space are fighting
+the platform. Gradio is right for the missing-field suggester (form in,
+suggestion out) but wrong for interactive viz with progressive
+disclosure, click-to-side-panel, linked views.
+
+Plan: when v10 lands a doc_vec change (#2 or #3), graduate the viz to
+a real interactive tool — D3 / Plotly.js / Observable, hosted separately
+from the Space. The Space stays focused on the suggester.
+
+Until then, the Gradio galaxy is "good enough."
+
+### 7. Value subword prediction in MLM
+
+Currently MLM only masks and predicts KEYs. With BPE in place, masking
+and predicting VALUE subwords becomes possible. Could be a meaningful
+capability boost (model learns value semantics like image-version
+patterns, port number distributions, kind values) OR a complexity trap
+(doubles the prediction problem, changes the loss balance).
+
+Not a v10 priority unless we have a failing test that benefits from
+value-content awareness.
+
+### 8. Article: tokenization → attention
+
+See [project memory "article-tokenization-attention"](../../../.claude/projects/-home-vimal-src-AI-ML-yaml-bert/memory/project_article_tokenization_attention.md).
+Side-quest essay on how tokenization shapes what attention can compose,
+using the `web-1 / web-2 / web-3` v8→v9 transition as a worked example.
+Not a coding task; pure write-up.
+
+---
 
 ## Note on scaling
 
