@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from yaml_bert.types import NodeType, YamlNode
 
 
-DOC_VECS_PATH = "output_v8_276K_recon_seed42/doc_vecs_epoch_20.pt"
-CACHE_PATH = "output_v8_276K_recon_seed42/doc_cache.pkl"
+DOC_VECS_PATH = "output_v9_276K_recon_seed42/doc_vecs_epoch_20.pt"
+CACHE_PATH = "output_v9_276K_recon_seed42/doc_cache.pkl"
 OUT_PATH = "hf-space/galaxy_data.json"
 N_SUBSET = 10_000
 SEED = 42

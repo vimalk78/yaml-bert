@@ -51,22 +51,20 @@ DEFAULT_VOCAB = "model/vocab.json"
 def load_model(checkpoint_path: str, vocab_path: str) -> tuple[YamlBertModel, Vocabulary]:
     _log(f"Loading vocab from {vocab_path}")
     vocab = Vocabulary.load(vocab_path)
-    _log(f"Vocab loaded: {vocab.key_vocab_size} keys, "
-         f"{vocab.value_vocab_size} values, "
-         f"{vocab.atomic_target_vocab_size} atomic targets")
+    _log(f"Vocab loaded: subword={vocab.subword_vocab_size}, "
+         f"atomic targets={vocab.atomic_target_vocab_size}")
 
     _log(f"Reading checkpoint file {checkpoint_path}")
     cp = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
-    _log("Building YamlBertModel architecture")
-    # recon_enabled=True is required to load checkpoints from MLM+recon training
-    # (state_dict includes recon_head weights). The recon head exists but is
-    # never invoked at inference time (no subtree_roots_flat passed in forward).
+    _log("Building YamlBertModel architecture (v9: subword embedding)")
+    # recon_enabled=True keeps the checkpoint's recon_head weights loadable.
+    # The recon head exists but is never invoked at inference time
+    # (no subtree_roots_flat passed in forward).
     config = YamlBertConfig(recon_enabled=True)
     emb = YamlBertEmbedding(
         config=config,
-        key_vocab_size=vocab.key_vocab_size,
-        value_vocab_size=vocab.value_vocab_size,
+        subword_vocab_size=vocab.subword_vocab_size,
     )
     model = YamlBertModel(
         config=config,
@@ -513,10 +511,17 @@ def _verdict_init(cos):
         f"`cos(C, D)` = **{cd:.3f}** (both have init) · "
         f"`max(cos(A,C), cos(B,D))` = **{mx:.3f}** (mixed). "
         + ("Init-pairs cluster tighter than mixed pairs — the model treats "
-           "`initContainers` as a real structural feature."
+           "`initContainers` as a real structural feature, stronger than the "
+           "value-content similarity (shared `image: nginx` etc.)."
            if passed else
-           "Mixed pairs are at least as close as init-pairs — the model "
-           "does not cleanly separate Pods by `initContainers` presence here.")
+           "Mixed pairs are at least as close as init-pairs. This is not a "
+           "regression — it reveals a re-balance: BPE makes `image` values "
+           "compositionally visible to attention, so pods sharing `nginx` "
+           "cluster together regardless of init presence. v8 with atomic "
+           "`[UNK]` values had no choice but to lean on structure; v9 has "
+           "both signals and now weights content more heavily here. "
+           "Whether that's good depends on use case (good for content "
+           "retrieval, less ideal for structure-only similarity).")
     )
     return passed, msg
 
@@ -547,15 +552,17 @@ def _verdict_namespace(cos):
     msg = (
         f"`min(same-ns cos)` = **{same_ns:.3f}** · "
         f"`max(cross-ns cos)` = **{cross_ns:.3f}**. "
-        + ("Same-namespace pairs cluster tighter — the model has somehow "
-           "encoded namespace as a feature (surprising, since namespace is "
-           "a leaf VALUE per the design rationale)."
+        + ("Same-namespace pairs cluster tighter — value content reaches "
+           "`doc_vec` even though the aggregator only sums KEY subtrees. "
+           "BPE makes namespace values compositional (e.g., `prod | uction`), "
+           "and self-attention spreads that signal into neighboring KEY "
+           "hidden states, which then flow into `doc_vec`. This was the "
+           "first failure of `[UNK]`-vocab v8 that v9 fixed."
            if passed else
            "Same-namespace and cross-namespace pairs have indistinguishable "
-           "cosines — the model is value-blind for namespace. This matches "
-           "the design: values are second-class in `doc_vec`. Compare with "
-           "the Service-type probe (passes) — `type` values matter because "
-           "they bring structural KEYS along, while namespace values don't.")
+           "cosines. v8 saw this because both `production` and `staging` "
+           "often hit `[UNK]`. v9 was expected to pass — if it does not, "
+           "investigate.")
     )
     return passed, msg
 
@@ -620,10 +627,14 @@ PRESETS = [
             "If the model encodes `metadata.namespace` as a feature, two "
             "Pods in the same namespace should be closer than two Pods in "
             "different namespaces (controlling for structure). "
-            "_Honest prediction: this should **fail** — namespace is a "
-            "leaf value, and values are second-class in `doc_vec`. The "
-            "failure would confirm the design rationale; a pass would "
-            "refute it._"
+            "_v8 with atomic vocab failed this probe — `production` and "
+            "`staging` often mapped to `[UNK]`, leaving attention with no "
+            "compositional content to work with. v9's byte-level BPE "
+            "decomposes namespace values into subwords, and self-attention "
+            "now spreads value content into surrounding KEY hidden states. "
+            "Those KEYs are what the aggregator pools into `doc_vec` — so "
+            "namespace effectively reaches `doc_vec` through the attention "
+            "channel, even though the aggregator stays KEY-only by design._"
         ),
         "manifests": [
             {"name": "production / web-1", "yaml": _POD_NS_PROD_1},
@@ -698,6 +709,8 @@ def _encode_doc_vec(yaml_text: str) -> torch.Tensor:
             sibling_indices=batch["sibling_indices"],
             batch_info=batch["batch_info"],
             padding_mask=batch["padding_mask"],
+            logical_ids=batch["logical_ids"],
+            n_logical_per_doc=batch["n_logical_per_doc"],
             parent_of_tensor=batch["parent_of_tensor"],
             top_level_key_mask=batch["top_level_key_mask"],
             edges_by_depth=batch["edges_by_depth"],
@@ -722,6 +735,9 @@ def _layout_2d(vecs):
     dist = 1.0 - cos
     np.fill_diagonal(dist, 0.0)
     dist = np.clip(dist, 0.0, None)
+    # sklearn MDS(metric="precomputed") requires strict symmetry; floating-point
+    # matmul can leave ~1e-7 asymmetries. Symmetrize explicitly.
+    dist = (dist + dist.T) / 2
 
     from sklearn.manifold import MDS
     mds = MDS(
@@ -1198,7 +1214,7 @@ Trained with MLM + reconstruction on 276K K8s manifests ·
                         value=EXAMPLE_NGINX,
                     )
                     threshold = gr.Slider(
-                        minimum=0.05, maximum=0.95, value=0.1, step=0.05,
+                        minimum=0.05, maximum=0.95, value=0.7, step=0.05,
                         label="Confidence threshold",
                     )
                     submit = gr.Button("Suggest missing fields", variant="primary")

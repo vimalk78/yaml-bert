@@ -118,11 +118,14 @@ def suggest_missing_fields(
         return [], {}
     annotator.annotate(nodes)
 
-    mask_id: int = vocab.special_tokens["[MASK]"]
+    mask_id: int = vocab.mask_id
 
     # Build atomic reverse map for decoding
     id_to_atomic: dict[int, str] = {v: k for k, v in vocab.atomic_target_vocab.items()}
-    id_to_special: dict[int, str] = {v: k for k, v in vocab.special_tokens.items()}
+    id_to_special: dict[int, str] = {
+        vocab.pad_id: "[PAD]", vocab.unk_id: "[UNK]",
+        vocab.mask_id: "[MASK]", vocab.long_value_id: "[LONG_VALUE]",
+    }
 
     # Group key nodes by parent_path
     keys_by_parent: dict[str, set[str]] = {}
@@ -301,9 +304,12 @@ def _run_probe_v8(
     ds = YamlBertDataset([fake_nodes], vocab, infer_config)
     item = ds[0]
 
-    # Apply [MASK] at insert_pos (dataset has mask_prob=0.0, so token is intact)
+    # v9 whole-word masking: insert_pos is a LOGICAL position (index into
+    # fake_nodes). Mask ALL subword positions whose logical_id == insert_pos.
     item["token_ids"] = item["token_ids"].clone()
-    item["token_ids"][insert_pos] = mask_id
+    sub_positions = (item["logical_ids"] == insert_pos).nonzero(as_tuple=True)[0]
+    for p in sub_positions:
+        item["token_ids"][p] = mask_id
 
     batch = collate_fn([item])
 
@@ -315,14 +321,18 @@ def _run_probe_v8(
             sibling_indices=batch["sibling_indices"],
             batch_info=batch["batch_info"],
             padding_mask=batch["padding_mask"],
+            logical_ids=batch["logical_ids"],
+            n_logical_per_doc=batch["n_logical_per_doc"],
             parent_of_tensor=batch["parent_of_tensor"],
             top_level_key_mask=batch["top_level_key_mask"],
             edges_by_depth=batch["edges_by_depth"],
             parents_by_depth=batch["parents_by_depth"],
         )
 
-    # YamlBertModel returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
-    logits = out[0]  # (1, N, V_atomic)
+    # v9 YamlBertModel returns (logits, doc_vec) where logits is
+    # (B, L_max, V_atomic) — indexed by LOGICAL position. insert_pos is
+    # already a logical index.
+    logits = out[0]
     probs = F.softmax(logits[0, insert_pos], dim=-1)
     topk = probs.topk(top_k + 5)
 
