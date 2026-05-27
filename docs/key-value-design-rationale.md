@@ -49,6 +49,83 @@ _MASKABLE_TYPES = (NodeType.KEY, NodeType.LIST_KEY)
 # Trained against atomic_labels, which are -100 (ignored) for VALUE positions.
 ```
 
+## v9 update: refined asymmetry
+
+v9 (subword tokenization, 2026-05-27) preserves the v8 asymmetry at the
+*aggregation/prediction* level — but materially changes the asymmetry at
+the *input/attention* level. The refinement matters because empirical
+probes show values reaching `doc_vec` through a channel the v8 framing
+didn't acknowledge.
+
+### What v9 changed at the input level
+
+- The separate `key_embedding` (6K) and `value_embedding` (38K) tables
+  were merged into one **unified subword embedding** (8,192 entries,
+  byte-level BPE). The KEY/VALUE distinction at the input is now carried
+  by the existing `node_type_embedding` (added as it always was), not by
+  which embedding table the token comes from.
+- VALUE strings are now **decomposed into subwords** (e.g.,
+  `namespace: production` → `production` becomes `prod | uction`). v8's
+  atomic-value vocab mapped many user-specific values to `[UNK]`, leaving
+  attention with no compositional content to work with.
+
+### What v9 kept the same
+
+- KEYs still get aggregated into `subtree_vecs` and `doc_vec`. VALUEs
+  still don't.
+- MLM still masks whole logical KEYs only (now masks all subwords of the
+  chosen KEY together — "whole-word masking").
+- The Token Head still predicts only KEY targets, from the same
+  `atomic_target_vocab` (now ~11K keys at v9's min_freq=5).
+
+### The refinement that matters
+
+**Values are second-class as AGGREGATION TARGETS but first-class as ATTENTION INPUTS.**
+
+Concretely: v9 attention now sees VALUE positions with rich compositional
+content (BPE subwords). When attention spreads VALUE content into
+neighboring KEY hidden states, those KEYs are what the aggregator pools
+into `doc_vec`. So value information *does* reach `doc_vec` — not through
+direct aggregation (the aggregator is still KEY-only) but through the
+attention channel.
+
+Empirical evidence (from
+[v9-subword-results.md](v9-subword-results.md)):
+
+- The **"Pods in same namespace vs different namespace" probe** was a
+  FAIL in v8 (`min(same-ns)=0.919 < max(cross-ns)=0.942`) and is a PASS
+  in v9 (`min(same-ns)=0.984 > max(cross-ns)=0.953`). Same 4 Pods, same
+  KEY structure, only the `metadata.namespace` value differs. v9 spots
+  the difference, v8 didn't.
+- The **C/E collision case** (web-1 vs web-3 staging Pods) went from
+  literal `cos=1.0000` in v8 (both names → `[UNK]` → identical input)
+  to `cos=0.9850` in v9. Distinguishable but very similar — the
+  structural identity dominates while the name value still perturbs.
+
+### What this means for the original v8 framing
+
+The v8 framing ("values are second-class") wasn't *wrong*, but it was
+*incomplete*. It described what the aggregator does — and that's still
+true. What it under-acknowledged was the attention channel, which in
+v8 was largely inert for user-specific values (atomic vocab + frequent
+`[UNK]` → no compositional content to spread). v9's BPE makes that
+channel active, and the values-second-class claim becomes ambiguous if
+not qualified.
+
+The clean way to state it now:
+
+> Keys define the schema; values are user payload. We let attention see
+> value content (because that helps predict the structural keys), but we
+> don't let value content dominate the document-level embedding (because
+> retrieval should be structure-based, not user-content-based). v9
+> achieves this by keeping the aggregator KEY-only while letting attention
+> see decomposed value subwords.
+
+The original "Where this design could bite" section below is still
+correct — foreign-key consistency, image-version reasoning, and schema
+validation are still not solved. But the namespace-style probes that
+required values to reach `doc_vec` at all are now working.
+
 ## Why this is the right design for K8s YAML
 
 The asymmetry is intentional. K8s YAML is more like a typed configuration
