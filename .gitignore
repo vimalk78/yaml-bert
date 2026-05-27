@@ -25,7 +25,10 @@ data/
 # HF Space deployable bundle — model code + checkpoint copied in at deploy time
 hf-space/yaml_bert/
 hf-space/model/
+hf-space/tokenizers/
+hf-space/.gradio/
 
 # Override *.txt for the Space's requirements.txt (it must be tracked)
 !hf-space/requirements.txt
 .superpowers/
+.claude/
