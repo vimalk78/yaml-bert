@@ -502,6 +502,80 @@ spec:
     - containerPort: 80
 """
 
+_DEPLOY_APPS_V1 = """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        ports:
+        - containerPort: 80
+"""
+
+_DEPLOY_EXT_V1BETA1 = """apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        ports:
+        - containerPort: 80
+"""
+
+_REPLICASET_APPS_V1 = """apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        ports:
+        - containerPort: 80
+"""
+
+_CONFIGMAP_PLAIN = """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web
+data:
+  config.yaml: |
+    debug: true
+  app.properties: |
+    key=value
+"""
+
 
 def _verdict_init(cos):
     cd = float(cos[2][3])
@@ -563,6 +637,37 @@ def _verdict_namespace(cos):
            "cosines. v8 saw this because both `production` and `staging` "
            "often hit `[UNK]`. v9 was expected to pass — if it does not, "
            "investigate.")
+    )
+    return passed, msg
+
+
+def _verdict_apiversion(cos):
+    # A = apps/v1 Deployment
+    # B = extensions/v1beta1 Deployment  (same kind, deprecated apiVersion)
+    # C = apps/v1 ReplicaSet              (different kind, same group, similar structure)
+    # D = v1 ConfigMap                    (unrelated)
+    same_kind = float(cos[0][1])
+    same_group_diff_kind = float(cos[0][2])
+    unrelated = float(cos[0][3])
+    primary = same_kind > same_group_diff_kind
+    secondary = same_group_diff_kind > unrelated
+    passed = primary and secondary
+    msg = (
+        f"`cos(apps/v1 Dep, ext/v1beta1 Dep)` = **{same_kind:.3f}** · "
+        f"`cos(Dep, ReplicaSet)` = **{same_group_diff_kind:.3f}** · "
+        f"`cos(Dep, ConfigMap)` = **{unrelated:.3f}**. "
+        + ("Same-kind-different-apiVersion pairs cluster tightest, then "
+           "same-group-different-kind, then unrelated. The model treats "
+           "apiVersion as a soft label, not a hard discriminator — it "
+           "recognizes `apps/v1` and `extensions/v1beta1` Deployments as "
+           "the same thing despite the apiVersion text differing."
+           if passed else
+           f"Expected ordering broken: same-kind={same_kind:.3f}, "
+           f"same-group={same_group_diff_kind:.3f}, unrelated={unrelated:.3f}. "
+           "If same-kind is NOT the tightest, the model is treating "
+           "apiVersion as a hard discriminator and separating same-kind "
+           "manifests by their api label — possibly an over-correction "
+           "from the eval-probe accuracy.")
     )
     return passed, msg
 
@@ -643,6 +748,32 @@ PRESETS = [
             {"name": "staging / web-2",    "yaml": _POD_NS_STAGING_2},
         ],
         "verdict_fn": _verdict_namespace,
+    },
+    {
+        "id": "apiversion",
+        "title": "apiVersion sensitivity (same kind, different apiVersion)",
+        "hypothesis": (
+            "K8s often supports multiple `apiVersion`s for the same kind "
+            "(e.g., `apps/v1` Deployment and the deprecated "
+            "`extensions/v1beta1` Deployment have nearly identical structure). "
+            "If the model understands kind as the structural identity "
+            "and apiVersion as a soft label, two same-kind manifests "
+            "with different apiVersions should still cluster tighter than "
+            "a same-group different-kind manifest (`apps/v1` ReplicaSet), "
+            "which in turn should be tighter than an unrelated kind "
+            "(`v1` ConfigMap). _The eval probes already show apiVersion "
+            "classification at 99.8% — but classification accuracy is "
+            "compatible with either understanding the relationship or "
+            "treating apiVersion as a hard discriminator. This probe "
+            "tests which._"
+        ),
+        "manifests": [
+            {"name": "apps/v1 Deployment",         "yaml": _DEPLOY_APPS_V1},
+            {"name": "extensions/v1beta1 Deploy",  "yaml": _DEPLOY_EXT_V1BETA1},
+            {"name": "apps/v1 ReplicaSet",         "yaml": _REPLICASET_APPS_V1},
+            {"name": "v1 ConfigMap (unrelated)",   "yaml": _CONFIGMAP_PLAIN},
+        ],
+        "verdict_fn": _verdict_apiversion,
     },
     {
         "id": "cross-kind",
