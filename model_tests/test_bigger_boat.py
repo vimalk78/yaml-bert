@@ -60,10 +60,12 @@ def run_bigger_boat_test(
     ds = YamlBertDataset([nodes], vocab, config)
     item = ds[0]
 
-    # Apply mask AFTER dataset construction (mask_prob=0.0 means no random masking)
-    mask_id = vocab.special_tokens["[MASK]"]
+    # v9 whole-word masking: mask all subwords of this logical KEY
+    mask_id = vocab.mask_id
     item["token_ids"] = item["token_ids"].clone()
-    item["token_ids"][mask_pos] = mask_id
+    sub_positions = (item["logical_ids"] == mask_pos).nonzero(as_tuple=True)[0]
+    for p in sub_positions:
+        item["token_ids"][p] = mask_id
 
     batch = collate_fn([item])
 
@@ -76,20 +78,21 @@ def run_bigger_boat_test(
             sibling_indices=batch["sibling_indices"],
             batch_info=batch["batch_info"],
             padding_mask=batch["padding_mask"],
+            logical_ids=batch["logical_ids"],
+            n_logical_per_doc=batch["n_logical_per_doc"],
             parent_of_tensor=batch["parent_of_tensor"],
             top_level_key_mask=batch["top_level_key_mask"],
             edges_by_depth=batch["edges_by_depth"],
             parents_by_depth=batch["parents_by_depth"],
         )
-    # YamlBertModel returns (logits, doc_vec) or (logits, doc_vec, recon_logits)
-    logits = out[0]  # (1, N, V_atomic)
-
+    logits = out[0]  # (B, L_max, V_atomic) — logical-indexed
     probs = F.softmax(logits[0, mask_pos], dim=-1)
     topk = probs.topk(10)
 
-    # Atomic-vocab reverse map — predictions are already raw key names
     id_to_atomic: dict[int, str] = {v: k for k, v in vocab.atomic_target_vocab.items()}
-    for tok, tok_id in vocab.special_tokens.items():
+    for tok, tok_id in (("[PAD]", vocab.pad_id), ("[UNK]", vocab.unk_id),
+                        ("[MASK]", vocab.mask_id),
+                        ("[LONG_VALUE]", vocab.long_value_id)):
         id_to_atomic[tok_id] = tok
 
     predictions: list[tuple[str, float]] = [
@@ -116,8 +119,7 @@ def main() -> None:
     torch.manual_seed(42)
     emb = YamlBertEmbedding(
         config=config,
-        key_vocab_size=vocab.key_vocab_size,
-        value_vocab_size=vocab.value_vocab_size,
+        subword_vocab_size=vocab.subword_vocab_size,
     )
     model = YamlBertModel(
         config=config,
