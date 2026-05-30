@@ -447,7 +447,7 @@ Retraining v8 with `value_min_freq=100` would shrink the model by
 ~9M params (22.5M → ~14M) while keeping all schema-meaningful values.
 Long-tail values would map to `[UNK]` — fine because v8 treats VALUEs
 as second-class anyway (never aggregated into doc_vec, never predicted
-by Token Head). The encoder still sees value POSITIONS via positional
+by Key Head). The encoder still sees value POSITIONS via positional
 embeddings + node_type — it just doesn't get a unique vector per
 random container name.
 
@@ -533,7 +533,7 @@ Same blocker as #2 — needs a failing test to evaluate.
 ### 4. Atomic vocab shrink (quick win)
 
 v9's atomic_target_vocab grew to 11,080 entries (vs v8's 6,049),
-inflating the Token Head by ~4M params. Bumping `--min-freq` from 5 to
+inflating the Key Head by ~4M params. Bumping `--min-freq` from 5 to
 10 or 15 would halve the atomic vocab and trim the head significantly.
 
 Cost: ~$6 + 12 hours JL training. Acceptance gate: capability test
@@ -589,6 +589,27 @@ See [project memory "article-tokenization-attention"](../../../.claude/projects/
 Side-quest essay on how tokenization shapes what attention can compose,
 using the `web-1 / web-2 / web-3` v8→v9 transition as a worked example.
 Not a coding task; pure write-up.
+
+### 9. Pre-norm encoder (free flip during v10 retraining)
+
+Today we use PyTorch's default `nn.TransformerEncoderLayer` with
+`norm_first=False` — that's **post-norm** (LayerNorm AFTER the residual
+add), the original 2017 paper formulation, also what BERT uses.
+
+Modern transformers (GPT-2+, LLaMA, T5) use **pre-norm** (`norm_first=True`):
+LayerNorm BEFORE attention/FFN, inside the residual path. Pre-norm
+trains more stably without learning-rate warmup and gives cleaner
+gradient flow — especially valuable at depth ≥ 12. At our current 6
+layers the marginal quality gain is small.
+
+No current failing test points at post-norm as the bottleneck (v9
+converged cleanly with the default schedule), so this does NOT justify
+a standalone retraining run. But when v10 retrains for another reason
+(#1, #2, or #4), bundling `norm_first=True` is a one-line free flip
+and sets us up for any future depth scaling.
+
+Implementation: add `norm_first=True` to the
+`nn.TransformerEncoderLayer(...)` call in `yaml_bert/model.py`.
 
 ---
 

@@ -38,4 +38,4 @@ PYTHONPATH=. python model_tests/test_structural.py <checkpoint> --vocab <vocab>
 ./scripts/run_all_tests.sh <checkpoint> <vocab>
 ```
 
-See [evaluation results](../docs/evaluation-results.md) for latest output.
+See [v9 subword results](../docs/v9-subword-results.md) for latest output.

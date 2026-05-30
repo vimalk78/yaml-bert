@@ -5,7 +5,7 @@
 > (6/9 → 9/9) and eliminates 99% [UNK] over-confidence. Capability
 > tests within noise of v5. Bigger-boat vocab_gap still 0/4 because
 > status targets are absent from the vocab — Lever 1 alone can't add
-> them. See [`evaluation-results.md` Section 7](./evaluation-results.md)
+> them. See [`evaluation-results-v5-v7.md` Section 7](./evaluation-results-v5-v7.md)
 > for full numbers. Levers 5 and 6 below remain unimplemented.
 
 ## Context

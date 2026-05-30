@@ -9,7 +9,7 @@ class YamlLinearizer:
     # Universal depth cap (Lever 5). Below this depth, content is essentially
     # exclusively CRD schema definition (depth 11+ is 99.997% CRD); capping
     # rebalances training-token pressure toward real manifest content.
-    # See docs/v6-plan.md "Lever 5" for the data justification.
+    # See docs/historical/v6-plan.md "Lever 5" for the data justification.
     DEFAULT_MAX_DEPTH: int = 9
 
     def __init__(self, max_depth: int = DEFAULT_MAX_DEPTH) -> None:

@@ -12,7 +12,7 @@
 | Did v9 retain v8's structural understanding? | **Yes.** Capability 92/93 (v8: 93/93). Structural 8/9 (v8: 8/9). Bigger-boat 13/13 (v8: 13/13). |
 | Did anything new emerge? | **Namespace probe now PASSES** (v8 failed). Suggests namespace value flows into doc_vec via richer attention. |
 | Did anything regress? | One structural probe (Pod ± initContainers) now fails — but it's a feature, not a bug: BPE makes the model more sensitive to value content (e.g., `nginx`), and image-name sharing dominates the structural feature in this specific probe. |
-| Was model smaller as predicted? | Partially. **22.5M → 18.4M params (-18%)**, not the predicted -41%. Atomic target vocab grew (6,049 → 11,080), inflating the Token Head. |
+| Was model smaller as predicted? | Partially. **22.5M → 18.4M params (-18%)**, not the predicted -41%. Atomic target vocab grew (6,049 → 11,080), inflating the Key Head. |
 | Did recon help? | No, same as v8. Loss stuck at ~0.0003. Bag-of-keys is too easy a target. Candidate for redesign or removal in v10. |
 | **Go/no-go to replace v8 in HF Space?** | **GO.** v9 strictly preserves v8's structural understanding while fixing the `[UNK]` collision class and improving the embedding space's discriminative range. |
 
@@ -215,7 +215,7 @@ Same pattern was observed in v8 ("Treatment MLM is +27% relative of control MLM 
 | **Atomic head output projection** (`3*d_model × atomic_vocab_size`) | 4.6M (assumed vocab 6K) | **8.5M** (vocab 11K) |
 | Total | ~13.25M | **18,414,480** |
 
-The Token Head ate the savings. v9's atomic_target_vocab grew to 11,080 entries (vs v8's 6,049) because of how `VocabBuilder.build_atomic_target_vocab` counts vs the v8 builder.
+The Key Head ate the savings. v9's atomic_target_vocab grew to 11,080 entries (vs v8's 6,049) because of how `VocabBuilder.build_atomic_target_vocab` counts vs the v8 builder.
 
 **Net: 22.5M → 18.4M (-18%).** Real savings, but less dramatic than the spec's 41% claim.
 
@@ -254,4 +254,4 @@ Acceptance gate from the spec:
 - Capability tests: `model_tests/test_capabilities.py`
 - Structural tests: `model_tests/test_structural.py`
 - Bigger-boat tests: `model_tests/test_bigger_boat.py`
-- v8 baseline results: `docs/v8-276K-scaleup-results.md`
+- v8 baseline results: `docs/historical/v8-276K-scaleup-results.md`

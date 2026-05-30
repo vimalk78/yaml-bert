@@ -24,14 +24,14 @@ KEYs are first-class:
 - Participate in self-attention (along with VALUEs)
 - **Aggregated bottom-up into `subtree_vecs` and `doc_vec`**
 - **Eligible for MLM masking**
-- **Predicted by the atomic Token Head**
+- **Predicted by the atomic Key Head**
 
 VALUEs are second-class:
 - Embedded via separate `value_embedding` table
 - Participate in self-attention (along with KEYs)
 - **NOT aggregated into `subtree_vecs`** — leaves in the tree, ignored by combine
 - **NEVER masked** during MLM training
-- **NEVER predicted** by the Token Head
+- **NEVER predicted** by the Key Head
 
 Concrete code references:
 
@@ -44,7 +44,7 @@ _MASKABLE_TYPES = (NodeType.KEY, NodeType.LIST_KEY)
 # Aggregates only over edges between KEY positions (built in collate_fn).
 # VALUE positions exist in hidden_states but are not summed into subtree_vecs.
 
-# yaml_bert/model.py — Token Head
+# yaml_bert/model.py — Key Head
 # atomic_logits = self.token_head([h_i ; doc_vec ; s_parent])
 # Trained against atomic_labels, which are -100 (ignored) for VALUE positions.
 ```
@@ -75,7 +75,7 @@ didn't acknowledge.
   still don't.
 - MLM still masks whole logical KEYs only (now masks all subwords of the
   chosen KEY together — "whole-word masking").
-- The Token Head still predicts only KEY targets, from the same
+- The Key Head still predicts only KEY targets, from the same
   `atomic_target_vocab` (now ~11K keys at v9's min_freq=5).
 
 ### The refinement that matters
@@ -284,5 +284,5 @@ semantics that self-attention can't provide.
 - `yaml_bert/embedding.py` — separate key_embedding + value_embedding
   tables
 - `docs/architecture.md` — broader architecture overview
-- `docs/v8-phase1-reconstruction-results.md` — finer-grained probe results
+- `docs/historical/v8-phase1-reconstruction-results.md` — finer-grained probe results
   showing schema values are encoded in doc_vec
