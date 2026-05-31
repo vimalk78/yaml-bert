@@ -678,21 +678,22 @@ def _verdict_apiversion(cos):
 
 
 def _verdict_cross_kind(cos):
-    # A=Pod nginx, B=Pod redis, C=Deployment wrapping nginx, D=ConfigMap
+    # A=Pod nginx, B=Pod redis, C=Deployment with nginx Pod template, D=ConfigMap
     pod_pod = float(cos[0][1])             # both Pods
-    pod_deploy = float(cos[0][2])          # Pod ↔ Deployment-wrapping-that-Pod
+    pod_deploy = float(cos[0][2])          # Pod ↔ Deployment with same-shape Pod template
     pod_cm = float(cos[0][3])              # Pod ↔ unrelated kind
     deploy_cm = float(cos[2][3])           # Deployment ↔ unrelated kind
     passed = pod_deploy > max(pod_cm, deploy_cm)
     msg = (
-        f"`cos(Pod, Deployment-wrapping-it)` = **{pod_deploy:.3f}** · "
+        f"`cos(Pod, Deployment-with-Pod-template)` = **{pod_deploy:.3f}** · "
         f"`cos(Pod, ConfigMap)` = **{pod_cm:.3f}** · "
         f"`cos(Pod, Pod)` = **{pod_pod:.3f}** (kind silo). "
-        + ("Pod and the Deployment that wraps it are closer than either is "
-           "to an unrelated ConfigMap — the model sees them as a family."
+        + ("Pod and the Deployment containing the same Pod template are "
+           "closer than either is to an unrelated ConfigMap — the model "
+           "encodes the shared Pod-shape across the two kinds."
            if passed else
-           "Pod-Deployment family is not detected — kinds form sharp silos "
-           "in the embedding.")
+           "The shared Pod-shape across the two kinds is not detected — "
+           "kinds form sharp silos in the embedding.")
     )
     return passed, msg
 
@@ -702,9 +703,14 @@ PRESETS = [
         "id": "init",
         "title": "Pod ± initContainers",
         "hypothesis": (
-            "If `initContainers` is a meaningful structural feature, two "
-            "Pods that both have one should be closer in embedding space "
-            "than a Pod with one and a structurally similar Pod without."
+            "If the model treats `initContainers` as a structural feature, "
+            "Pods that both have one should land closer in embedding space "
+            "than mixed pairs. _Caveat: the init container in C and D is "
+            "the same busybox setup, so `cos(C, D)` reflects both "
+            "structural-key presence AND shared busybox content — this "
+            "test is necessary but not sufficient for the structural "
+            "claim. A follow-up varying the init-container content would "
+            "isolate the two signals._"
         ),
         "manifests": [
             {"name": "nginx (no init)",   "yaml": _POD_NGINX},
@@ -719,8 +725,10 @@ PRESETS = [
         "title": "Service type (ClusterIP / NodePort / LoadBalancer)",
         "hypothesis": (
             "Each Service `type` brings its own structural keys "
-            "(`nodePort`, `externalTrafficPolicy`, …). Same-type Services "
-            "should cluster, even with different selectors/ports."
+            "(`nodePort`, `externalTrafficPolicy`, …). If the model "
+            "encodes `type` as a structural axis, same-type Services "
+            "should sit closer in embedding space than cross-type ones, "
+            "even when their selectors and ports differ."
         ),
         "manifests": [
             {"name": "ClusterIP — app=web",       "yaml": _SVC_CLUSTERIP_WEB},
@@ -758,19 +766,19 @@ PRESETS = [
         "id": "apiversion",
         "title": "apiVersion sensitivity (same kind, different apiVersion)",
         "hypothesis": (
-            "K8s often supports multiple `apiVersion`s for the same kind "
+            "K8s supports multiple `apiVersion`s for the same kind "
             "(e.g., `apps/v1` Deployment and the deprecated "
-            "`extensions/v1beta1` Deployment have nearly identical structure). "
-            "If the model understands kind as the structural identity "
-            "and apiVersion as a soft label, two same-kind manifests "
-            "with different apiVersions should still cluster tighter than "
-            "a same-group different-kind manifest (`apps/v1` ReplicaSet), "
-            "which in turn should be tighter than an unrelated kind "
-            "(`v1` ConfigMap). _The eval probes already show apiVersion "
-            "classification at 99.8% — but classification accuracy is "
-            "compatible with either understanding the relationship or "
-            "treating apiVersion as a hard discriminator. This probe "
-            "tests which._"
+            "`extensions/v1beta1` Deployment have nearly identical "
+            "structure). If the model encodes kind as the dominant "
+            "structural signal and `apiVersion` as a soft label, two "
+            "same-kind manifests with different `apiVersion`s should "
+            "still sit closer in embedding space than a same-group "
+            "different-kind manifest (`apps/v1` ReplicaSet), which in "
+            "turn should be closer than an unrelated kind "
+            "(`v1` ConfigMap). _Eval probes already show 99.8% "
+            "`apiVersion` classification accuracy — but classification "
+            "is compatible with either treating `apiVersion` as a soft "
+            "label or as a hard discriminator. This probe tests which._"
         ),
         "manifests": [
             {"name": "apps/v1 Deployment",         "yaml": _DEPLOY_APPS_V1},
@@ -782,18 +790,21 @@ PRESETS = [
     },
     {
         "id": "cross-kind",
-        "title": "Pod vs Deployment wrapping the same Pod",
+        "title": "Pod vs Deployment containing the same Pod template",
         "hypothesis": (
-            "A Deployment wraps a Pod template inside `spec.template`. "
-            "If the model sees them as a related family, the Pod and "
-            "Deployment should be closer than either is to an unrelated "
-            "kind like ConfigMap."
+            "A Deployment's `spec.template` carries a Pod's shape — the "
+            "same `spec.containers` substructure as a standalone Pod, "
+            "just nested one level deeper. If the model encodes that "
+            "shape similarity, a standalone Pod and a Deployment "
+            "containing the same Pod template should sit closer in "
+            "embedding space than either does to an unrelated kind like "
+            "ConfigMap."
         ),
         "manifests": [
-            {"name": "Pod (nginx)",                  "yaml": _POD_NGINX},
-            {"name": "Pod (redis)",                  "yaml": _POD_REDIS},
-            {"name": "Deployment wrapping nginx",    "yaml": _DEPLOY_NGINX},
-            {"name": "ConfigMap (unrelated)",        "yaml": _CONFIGMAP_APP},
+            {"name": "Pod (nginx)",                       "yaml": _POD_NGINX},
+            {"name": "Pod (redis)",                       "yaml": _POD_REDIS},
+            {"name": "Deployment with nginx template",    "yaml": _DEPLOY_NGINX},
+            {"name": "ConfigMap (unrelated)",             "yaml": _CONFIGMAP_APP},
         ],
         "verdict_fn": _verdict_cross_kind,
     },
